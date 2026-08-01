@@ -1,4 +1,6 @@
-# Voice Interview Agent
+![Muhawir](muhawir-mark.svg)
+
+# Muhawir — Voice Interview Agent
 
 A real-time voice interviewer that adapts its questions to the candidate's
 answers and produces a scored, per-dimension report at the end of the call.
