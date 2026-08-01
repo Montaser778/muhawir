@@ -1,3 +1,4 @@
+![Muhawir](muhawir-mark.png)
 # Voice Interview Agent
 
 A real-time voice interviewer that adapts its questions to the candidate's
