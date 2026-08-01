@@ -1,15 +1,26 @@
+<<<<<<< HEAD
 # fly.toml app configuration file generated for muhawir on 2026-08-01T20:01:20Z
+=======
+# fly.toml app configuration file generated for muhawir-interview on 2026-08-01T22:49:03+03:00
+>>>>>>> 007bc8c (Add UDP service for WebRTC media)
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'muhawir'
+<<<<<<< HEAD
 primary_region = 'iad'
 
 [build]
 
 [http_service]
   internal_port = 8080
+=======
+primary_region = 'fra'
+
+[http_service]
+  internal_port = 7860
+>>>>>>> 007bc8c (Add UDP service for WebRTC media)
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
@@ -18,6 +29,11 @@ primary_region = 'iad'
 
 [[vm]]
   memory = '1gb'
+<<<<<<< HEAD
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 256
+=======
+  cpus = 1
+  memory_mb = 1024
+>>>>>>> 007bc8c (Add UDP service for WebRTC media)
