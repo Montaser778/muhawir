@@ -37,3 +37,10 @@ primary_region = 'fra'
   cpus = 1
   memory_mb = 1024
 >>>>>>> 007bc8c (Add UDP service for WebRTC media)
+
+[[http_service.checks]]
+  grace_period = "45s"
+  interval = "15s"
+  timeout = "5s"
+  method = "GET"
+  path = "/api/health"
