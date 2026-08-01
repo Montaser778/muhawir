@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+reports/
+.env
+.git
+*.zip
+API-KEY.txt
+Cartesia api-key.txt

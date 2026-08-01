@@ -1,0 +1,12 @@
+﻿.env
+*api-key*.txt
+API-KEY.txt
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+reports/
+.vscode/
+.idea/
+.DS_Store
+files*.zip

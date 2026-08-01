@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Interview Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0a0b0d;
+    --panel: #131519;
+    --line: #23272e;
+    --amber: #ffb627;
+    --cyan: #4dd8e6;
+    --text: #e6e8eb;
+    --muted: #6b7280;
+    --display: "Space Grotesk", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100svh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--display);
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Faint drifting glow — depth behind the card without competing for
+     attention during a live interview. Purely decorative, so it sits
+     fixed behind everything and never intercepts clicks. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -10%;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(38% 32% at 22% 28%, rgba(255, 182, 39, 0.10), transparent 70%),
+      radial-gradient(42% 36% at 80% 74%, rgba(77, 216, 230, 0.09), transparent 70%);
+    animation: drift 26s ease-in-out infinite alternate;
+  }
+
+  @keyframes drift {
+    0%   { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(2%, -3%) scale(1.06); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body::before { animation: none; }
+  }
+
+  .room {
+    position: relative;
+    z-index: 1;
+    width: min(680px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  /* ── Status bar ─────────────────────────────────────────── */
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .dot[data-state="live"] { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+  .dot[data-state="wait"] { background: var(--amber); }
+
+  .bar .spacer { margin-left: auto; }
+  .bar b { color: var(--text); font-weight: 500; }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  .head { padding: 40px 32px 24px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-size: clamp(28px, 6vw, 40px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+    margin: 0 0 14px;
+  }
+
+  .sub { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 46ch; }
+
+  /* ── Signature: two voices on one baseline ──────────────── */
+  .stage { padding: 8px 32px 4px; }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 150px;
+  }
+
+  .legend {
+    display: flex;
+    gap: 22px;
+    padding: 0 32px 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+  .legend span::before {
+    content: "";
+    display: inline-block;
+    width: 16px;
+    height: 2px;
+    margin-right: 7px;
+    vertical-align: middle;
+  }
+  .legend .you::before { background: var(--cyan); }
+  .legend .them::before { background: var(--amber); }
+
+  /* ── Controls ───────────────────────────────────────────── */
+  .controls { padding: 20px 32px 32px; display: flex; align-items: center; gap: 16px; }
+
+  button {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 14px 26px;
+    border-radius: 8px;
+    border: 1px solid var(--amber);
+    background: var(--amber);
+    color: #101114;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+  button:hover:not(:disabled) { opacity: 0.88; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+  button.leave { background: transparent; color: var(--amber); }
+
+  .hint { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+  .credit {
+    margin: 0;
+    padding: 18px 32px 22px;
+    border-top: 1px solid var(--line);
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .credit b { color: var(--amber); font-weight: 500; letter-spacing: 0.06em; }
+
+  .error {
+    margin: 0 32px 24px;
+    padding: 12px 14px;
+    border-left: 2px solid var(--amber);
+    background: rgba(255, 182, 39, 0.06);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  [hidden] { display: none !important; }
+
+  /* ── Report ─────────────────────────────────────────────── */
+  .report { border-top: 1px solid var(--line); padding: 28px 32px 8px; }
+
+  .report-head { margin-bottom: 26px; }
+
+  .score { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 8px; }
+  .score-value {
+    font-family: var(--mono);
+    font-size: 46px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--amber);
+  }
+  .score-max { font-family: var(--mono); font-size: 15px; color: var(--muted); }
+
+  .report-meta { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* Score bars: the rubric made visible. */
+  .dim { margin-bottom: 14px; }
+  .dim-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .dim-name { color: var(--text); }
+  .dim-score { color: var(--muted); }
+  .track { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .fill { height: 100%; background: var(--cyan); border-radius: 2px; }
+  .dim.weak .fill { background: var(--amber); }
+
+  .turn { border-top: 1px solid var(--line); padding: 20px 0; }
+  .turn-q { font-size: 15px; font-weight: 500; margin: 0 0 10px; line-height: 1.45; }
+  .turn-a {
+    margin: 0 0 12px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .turn-note { margin: 0 0 4px; font-size: 13px; line-height: 1.6; }
+  .turn-note b { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+
+  .report-actions { padding: 20px 0 4px; border-top: 1px solid var(--line); }
+  .download {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--amber);
+    text-decoration: none;
+    border: 1px solid var(--amber);
+    border-radius: 8px;
+    padding: 11px 20px;
+  }
+  .download:hover { background: rgba(255, 182, 39, 0.08); }
+  .download:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<main class="room">
+  <div class="bar">
+    <span class="dot" id="dot" data-state="idle"></span>
+    <span id="status">Not connected</span>
+    <span class="spacer"></span>
+    <span>RTT <b id="rtt">—</b></span>
+  </div>
+
+  <header class="head">
+    <p class="eyebrow" id="eyebrow">Mock interview</p>
+    <h1 id="role">Machine Learning Engineer</h1>
+    <p class="sub" id="sub">
+      A voice interview that adapts to your answers. Speak naturally — you can
+      interrupt at any time. Your scored report is written when the call ends.
+    </p>
+  </header>
+
+  <div class="stage">
+    <canvas id="wave" aria-hidden="true"></canvas>
+  </div>
+  <div class="legend">
+    <span class="you" id="legendYou">You</span>
+    <span class="them" id="legendThem">Interviewer</span>
+  </div>
+
+  <p class="error" id="error" hidden></p>
+
+  <section class="report" id="report" hidden>
+    <div class="report-head">
+      <p class="eyebrow" id="reportEyebrow">Your report</p>
+      <div class="score">
+        <span class="score-value" id="scoreValue">—</span>
+        <span class="score-max">/ 5</span>
+      </div>
+      <p class="report-meta" id="reportMeta"></p>
+    </div>
+    <div id="dimensions"></div>
+    <div id="turns"></div>
+    <div class="report-actions">
+      <a class="download" id="download" href="#" download>Download report</a>
+    </div>
+  </section>
+
+  <div class="controls">
+    <button id="start">Start interview</button>
+    <button id="stop" class="leave" hidden>End call</button>
+    <span class="hint" id="hint">Microphone access required</span>
+  </div>
+
+  <p class="credit">Developed by <b>Eng. Montaser Hussam</b></p>
+</main>
+
+<audio id="remote" autoplay playsinline></audio>
+
+<script>
+/* ── Copy ──────────────────────────────────────────────────── */
+const STRINGS = {
+  eyebrow: "Mock interview",
+  sub: "A voice interview that adapts to your answers. Speak naturally — you can interrupt at any time. Your scored report is written when the call ends.",
+  you: "You",
+  them: "Interviewer",
+  start: "Start interview",
+  again: "Start again",
+  stop: "End call",
+  idle: "Not connected",
+  mic: "Requesting microphone",
+  connecting: "Connecting",
+  live: "Live",
+  ended: "Call ended",
+  hintMic: "Microphone access required",
+  hintLive: "Speak naturally. Interrupt whenever you want.",
+  hintDone: "Your report was saved to the reports folder.",
+  errMic: "Microphone access was blocked. Allow it in your browser settings, then try again.",
+  errServer: "Could not reach the interview server. Check that it is running, then try again.",
+  reportTitle: "Your report",
+  reportWaiting: "Scoring your answers…",
+  reportEmpty: "No answers were scored. The call ended before you answered a question.",
+  reportFailed: "The report could not be generated.",
+  download: "Download report",
+  strength: "Strength",
+  improve: "Improve",
+  focus: "Focus area",
+  dims: {
+    relevance: "Relevance",
+    technical_depth: "Technical depth",
+    structure: "Structure",
+    evidence: "Evidence",
+    concision: "Concision",
+  },
+};
+
+const t = (key) => STRINGS[key];
+
+const els = {
+  dot: document.getElementById("dot"),
+  status: document.getElementById("status"),
+  rtt: document.getElementById("rtt"),
+  role: document.getElementById("role"),
+  start: document.getElementById("start"),
+  stop: document.getElementById("stop"),
+  hint: document.getElementById("hint"),
+  error: document.getElementById("error"),
+  remote: document.getElementById("remote"),
+  canvas: document.getElementById("wave"),
+  eyebrow: document.getElementById("eyebrow"),
+  sub: document.getElementById("sub"),
+  legendYou: document.getElementById("legendYou"),
+  legendThem: document.getElementById("legendThem"),
+  report: document.getElementById("report"),
+  reportEyebrow: document.getElementById("reportEyebrow"),
+  scoreValue: document.getElementById("scoreValue"),
+  reportMeta: document.getElementById("reportMeta"),
+  dimensions: document.getElementById("dimensions"),
+  turns: document.getElementById("turns"),
+  download: document.getElementById("download"),
+};
+
+let sessionId = null;
+let pollTimer = null;
+
+function applyStrings() {
+  els.eyebrow.textContent = t("eyebrow");
+  els.sub.textContent = t("sub");
+  els.legendYou.textContent = t("you");
+  els.legendThem.textContent = t("them");
+  els.start.textContent = t("start");
+  els.stop.textContent = t("stop");
+  els.hint.textContent = t("hintMic");
+  els.status.textContent = t("idle");
+  els.reportEyebrow.textContent = t("reportTitle");
+  els.download.textContent = t("download");
+}
+
+let pc = null, localStream = null, statsTimer = null, rafId = null;
+let audioCtx = null, analysers = { you: null, them: null };
+
+/* ── Status helpers ───────────────────────────────────────── */
+function setStatus(text, state = "idle") {
+  els.status.textContent = text;
+  els.dot.dataset.state = state;
+}
+
+function showError(message) {
+  els.error.textContent = message;
+  els.error.hidden = false;
+}
+
+function clearError() {
+  els.error.hidden = true;
+}
+
+/* ── Signature visual: two voices sharing one baseline ────── */
+function setupCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = els.canvas.getBoundingClientRect();
+  els.canvas.width = rect.width * dpr;
+  els.canvas.height = 150 * dpr;
+  const ctx = els.canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return ctx;
+}
+
+function attachAnalyser(stream, key) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  const source = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.75;
+  source.connect(analyser);
+  // A remote WebRTC track's analyser often stays silent unless the graph is
+  // pulled all the way to the destination. Route it through a muted node so
+  // that happens without doubling playback (which already comes from the
+  // plain <audio> element).
+  const silence = audioCtx.createGain();
+  silence.gain.value = 0;
+  analyser.connect(silence);
+  silence.connect(audioCtx.destination);
+  analysers[key] = analyser;
+}
+
+function draw() {
+  const ctx = els.canvas.getContext("2d");
+  const width = els.canvas.getBoundingClientRect().width;
+  const height = 150;
+  const mid = height / 2;
+
+  ctx.clearRect(0, 0, width, height);
+
+  // Shared baseline — the conversation's spine.
+  ctx.strokeStyle = "#23272e";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, mid);
+  ctx.lineTo(width, mid);
+  ctx.stroke();
+
+  const render = (analyser, color, direction) => {
+    if (!analyser) return;
+    const bins = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(bins);
+
+    const bars = 56;
+    const step = Math.floor(bins.length / bars);
+    const barWidth = width / bars;
+
+    ctx.fillStyle = color;
+    for (let i = 0; i < bars; i++) {
+      const value = bins[i * step] / 255;
+      const barHeight = Math.max(1, value * (mid - 8));
+      const x = i * barWidth;
+      const y = direction === "up" ? mid - barHeight : mid;
+      ctx.fillRect(x, y, barWidth - 2, barHeight);
+    }
+  };
+
+  render(analysers.you, "#4dd8e6", "up");
+  render(analysers.them, "#ffb627", "down");
+
+  rafId = requestAnimationFrame(draw);
+}
+
+/* ── Connection stats ─────────────────────────────────────── */
+async function pollStats() {
+  if (!pc) return;
+  const stats = await pc.getStats();
+  stats.forEach((report) => {
+    if (report.type === "candidate-pair" && report.state === "succeeded") {
+      if (report.currentRoundTripTime != null) {
+        els.rtt.textContent = Math.round(report.currentRoundTripTime * 1000) + " ms";
+      }
+    }
+  });
+}
+
+/* ── Call lifecycle ───────────────────────────────────────── */
+async function start() {
+  clearError();
+  els.report.hidden = true;
+  clearInterval(pollTimer);
+  els.start.disabled = true;
+  setStatus(t("mic"), "wait");
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    showError(t("errMic"));
+    setStatus(t("idle"));
+    els.start.disabled = false;
+    return;
+  }
+
+  setStatus(t("connecting"), "wait");
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+
+  localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+  pc.addTransceiver("audio", { direction: "recvonly" });
+
+  pc.ontrack = (event) => {
+    els.remote.srcObject = event.streams[0];
+    attachAnalyser(event.streams[0], "them");
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") {
+      setStatus(t("live"), "live");
+      els.hint.textContent = t("hintLive");
+    } else if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      stop();
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // Wait for ICE gathering so a single POST carries a complete offer.
+  await new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") return resolve();
+    const check = () => {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", check);
+        resolve();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", check);
+    setTimeout(resolve, 2500); // don't hang forever on a slow network
+  });
+
+  try {
+    const response = await fetch("/api/offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sdp: pc.localDescription.sdp,
+        type: pc.localDescription.type,
+        pc_id: null,
+        restart_pc: false,
+      }),
+    });
+    if (!response.ok) throw new Error("Server returned " + response.status);
+    const answer = await response.json();
+    sessionId = answer.pc_id || null;
+    await pc.setRemoteDescription(answer);
+  } catch (err) {
+    showError(t("errServer"));
+    setStatus(t("idle"));
+    await stop();
+    return;
+  }
+
+  attachAnalyser(localStream, "you");
+  setupCanvas();
+  draw();
+
+  statsTimer = setInterval(pollStats, 1000);
+  els.stop.hidden = false;
+}
+
+async function stop() {
+  clearInterval(statsTimer);
+  cancelAnimationFrame(rafId);
+  analysers = { you: null, them: null };
+
+  if (localStream) localStream.getTracks().forEach((t) => t.stop());
+  if (pc) pc.close();
+  pc = null;
+  localStream = null;
+
+  // Closed rather than reused: a stale AudioContext across repeat calls in
+  // the same tab leaves orphaned nodes from the previous call's tracks,
+  // which is why the remote-track bar can work once and then flake out.
+  if (audioCtx) {
+    await audioCtx.close();
+    audioCtx = null;
+  }
+
+  setStatus(t("ended"));
+  els.rtt.textContent = "—";
+  els.start.disabled = false;
+  els.start.textContent = t("again");
+  els.stop.hidden = true;
+  els.hint.textContent = t("hintDone");
+
+  const ctx = els.canvas.getContext("2d");
+  ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+
+  if (sessionId) pollForReport();
+}
+
+/* ── Report ───────────────────────────────────────────────── */
+function pollForReport() {
+  els.hint.textContent = t("reportWaiting");
+  let attempts = 0;
+
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    attempts++;
+    // Scoring drains for at most 30s server-side; give it 60s of headroom.
+    if (attempts > 30) {
+      clearInterval(pollTimer);
+      els.hint.textContent = t("reportFailed");
+      return;
+    }
+    try {
+      const response = await fetch(`/api/report/${encodeURIComponent(sessionId)}`);
+      if (!response.ok) return;
+      const data = await response.json();
+
+      if (data.status === "ready" && data.report) {
+        clearInterval(pollTimer);
+        renderReport(data.report);
+      } else if (data.status === "empty") {
+        clearInterval(pollTimer);
+        els.hint.textContent = t("reportEmpty");
+      } else if (data.status === "error") {
+        clearInterval(pollTimer);
+        els.hint.textContent = t("reportFailed");
+      }
+    } catch (err) {
+      /* keep polling; a transient failure is not fatal */
+    }
+  }, 2000);
+}
+
+function renderReport(report) {
+  els.hint.textContent = t("hintDone");
+  els.scoreValue.textContent = report.overall_score ?? "—";
+
+  const parts = [
+    `${report.questions_answered} Q`,
+    `${Math.round(report.duration_seconds)}s`,
+  ];
+  if (report.p50_response_latency_ms) {
+    parts.push(`${Math.round(report.p50_response_latency_ms)} ms p50`);
+  }
+  els.reportMeta.textContent = parts.join("  ·  ");
+
+  // Dimension bars. The weakest one is highlighted, because that is the
+  // single most useful thing in the whole report.
+  const dims = report.dimension_averages || {};
+  els.dimensions.innerHTML = Object.entries(dims)
+    .map(([name, value]) => {
+      const label = (t("dims")[name] || name.replace(/_/g, " "));
+      const weak = name === report.weakest_dimension ? " weak" : "";
+      const pct = Math.max(0, Math.min(100, (value / 5) * 100));
+      return `<div class="dim${weak}">
+        <div class="dim-row"><span class="dim-name">${escapeHtml(label)}</span>
+        <span class="dim-score">${value}</span></div>
+        <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+      </div>`;
+    })
+    .join("");
+
+  els.turns.innerHTML = (report.turns || [])
+    .map(
+      (turn) => `<div class="turn">
+        <p class="turn-q">${escapeHtml(turn.question)}</p>
+        <p class="turn-a">${escapeHtml(turn.answer)}</p>
+        <p class="turn-note"><b>${t("strength")}</b> ${escapeHtml(turn.strength || "")}</p>
+        <p class="turn-note"><b>${t("improve")}</b> ${escapeHtml(turn.improvement || "")}</p>
+      </div>`
+    )
+    .join("");
+
+  els.download.href = `/api/report/${encodeURIComponent(sessionId)}/download`;
+  els.report.hidden = false;
+  els.report.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = value == null ? "" : String(value);
+  return div.innerHTML;
+}
+
+els.start.addEventListener("click", start);
+els.stop.addEventListener("click", stop);
+window.addEventListener("resize", () => { if (pc) setupCanvas(); });
+
+applyStrings();
+
+fetch("/api/health")
+  .then((r) => r.json())
+  .then((d) => { els.role.textContent = d.role; })
+  .catch(() => {});
+</script>
+</body>
+</html>
