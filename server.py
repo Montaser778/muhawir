@@ -17,10 +17,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pipecat.transports.smallwebrtc.request_handler import (
-    SmallWebRTCRequest,
-    SmallWebRTCRequestHandler,
-)
+import os
+from pipecat.transports.smallwebrtc.connection import IceServer
 
 from interview.report import render_markdown
 from interview.store import store
@@ -38,6 +36,16 @@ STATIC_DIR = Path(__file__).parent / "static"
 _background_tasks: set[asyncio.Task] = set()
 webrtc_handler = SmallWebRTCRequestHandler()
 
+ICE_SERVERS = [
+    IceServer(urls="stun:stun.l.google.com:19302"),
+    IceServer(
+        urls="turn:standard.relay.metered.ca:443?transport=tcp",
+        username=os.getenv("TURN_USERNAME"),
+        credential=os.getenv("TURN_CREDENTIAL"),
+    ),
+]
+
+webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
