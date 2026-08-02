@@ -19,9 +19,10 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import os
 from pipecat.transports.smallwebrtc.connection import IceServer
-
 from interview.report import render_markdown
 from interview.store import store
+from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler
+from pipecat.transports.smallwebrtc.connection import IceServer
 
 load_dotenv()
 
