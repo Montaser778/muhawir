@@ -1,3 +1,13 @@
+---
+title: Muhawir
+emoji: 🎙️
+colorFrom: yellow
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 ![Muhawir](muhawir-mark.svg)
 
 # Muhawir — Voice Interview Agent
