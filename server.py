@@ -17,15 +17,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-import os
 from pipecat.transports.smallwebrtc.connection import IceServer
-from interview.report import render_markdown
-from interview.store import store
-from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler
 from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequest,
     SmallWebRTCRequestHandler,
 )
+
+from interview.report import render_markdown
+from interview.store import store
 
 load_dotenv()
 
@@ -41,6 +40,14 @@ _background_tasks: set[asyncio.Task] = set()
 
 TURN_USER = os.getenv("TURN_USERNAME")
 TURN_PASS = os.getenv("TURN_CREDENTIAL")
+
+if not TURN_USER or not TURN_PASS:
+    log.warning(
+        "TURN credentials missing (TURN_USERNAME / TURN_CREDENTIAL). "
+        "Local calls will work, but remote calls will fail ICE with 401."
+    )
+else:
+    log.info("TURN credentials loaded for user %s***", TURN_USER[:6])
 
 ICE_SERVERS = [
     IceServer(urls="stun:stun.l.google.com:19302"),
