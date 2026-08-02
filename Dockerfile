@@ -16,3 +16,6 @@ COPY . .
 
 # Render/Railway/Fly all inject PORT at runtime; server.py already reads it.
 CMD ["python", "server.py"]
+
+EXPOSE 7860
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
