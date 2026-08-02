@@ -34,7 +34,6 @@ log = logging.getLogger("server")
 
 STATIC_DIR = Path(__file__).parent / "static"
 _background_tasks: set[asyncio.Task] = set()
-webrtc_handler = SmallWebRTCRequestHandler()
 
 ICE_SERVERS = [
     IceServer(urls="stun:stun.l.google.com:19302"),
@@ -44,7 +43,6 @@ ICE_SERVERS = [
         credential=os.getenv("TURN_CREDENTIAL"),
     ),
 ]
-
 webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
 
 @asynccontextmanager
