@@ -49,13 +49,35 @@ if not TURN_USER or not TURN_PASS:
 else:
     log.info("TURN credentials loaded for user %s***", TURN_USER[:6])
 
-ICE_SERVERS = [
-    IceServer(urls="stun:stun.l.google.com:19302"),
-    IceServer(urls="turn:global.relay.metered.ca:80", username=TURN_USER, credential=TURN_PASS),
-    IceServer(urls="turn:global.relay.metered.ca:80?transport=tcp", username=TURN_USER, credential=TURN_PASS),
-    IceServer(urls="turn:global.relay.metered.ca:443", username=TURN_USER, credential=TURN_PASS),
-    IceServer(urls="turns:global.relay.metered.ca:443?transport=tcp", username=TURN_USER, credential=TURN_PASS),
-]
+TURN_ONLY = os.getenv("TURN_ONLY", "1") == "1"
+
+if TURN_ONLY:
+    # Relay-only: forces every candidate through TURN. Slower to gather but
+    # survives symmetric NAT on both ends, which is what breaks direct paths.
+    ICE_SERVERS = [
+        IceServer(
+            urls="turn:global.relay.metered.ca:443?transport=tcp",
+            username=TURN_USER,
+            credential=TURN_PASS,
+        ),
+        IceServer(
+            urls="turn:global.relay.metered.ca:80?transport=tcp",
+            username=TURN_USER,
+            credential=TURN_PASS,
+        ),
+    ]
+    log.info("ICE mode: TURN relay only (%d servers)", len(ICE_SERVERS))
+else:
+    ICE_SERVERS = [
+        IceServer(urls="stun:stun.l.google.com:19302"),
+        IceServer(
+            urls="turn:global.relay.metered.ca:443?transport=tcp",
+            username=TURN_USER,
+            credential=TURN_PASS,
+        ),
+    ]
+    log.info("ICE mode: STUN + TURN (%d servers)", len(ICE_SERVERS))
+
 webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
 
 @asynccontextmanager
