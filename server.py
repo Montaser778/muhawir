@@ -39,13 +39,15 @@ log = logging.getLogger("server")
 STATIC_DIR = Path(__file__).parent / "static"
 _background_tasks: set[asyncio.Task] = set()
 
+TURN_USER = os.getenv("TURN_USERNAME")
+TURN_PASS = os.getenv("TURN_CREDENTIAL")
+
 ICE_SERVERS = [
     IceServer(urls="stun:stun.l.google.com:19302"),
-    IceServer(
-        urls="turn:standard.relay.metered.ca:443?transport=tcp",
-        username=os.getenv("TURN_USERNAME"),
-        credential=os.getenv("TURN_CREDENTIAL"),
-    ),
+    IceServer(urls="turn:global.relay.metered.ca:80", username=TURN_USER, credential=TURN_PASS),
+    IceServer(urls="turn:global.relay.metered.ca:80?transport=tcp", username=TURN_USER, credential=TURN_PASS),
+    IceServer(urls="turn:global.relay.metered.ca:443", username=TURN_USER, credential=TURN_PASS),
+    IceServer(urls="turns:global.relay.metered.ca:443?transport=tcp", username=TURN_USER, credential=TURN_PASS),
 ]
 webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
 
