@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  muhawir:
+    build: .
+    # هذا هو السطر السحري الذي يحل مشكلة الـ WebRTC
+    network_mode: "host" 
+    environment:
+environment:
+  - GROQ_API_KEY=${GROQ_API_KEY}      - CARTESIA_API_KEY=sk_car_oCN4ZKLxRoKEPLBaBoHNZu
+      - PORT=8000

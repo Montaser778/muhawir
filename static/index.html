@@ -263,6 +263,22 @@
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
   }
+
+  /* ── Small screens ──────────────────────────────────────── */
+  /* Purely additive: narrows the same 32px side padding used
+     throughout, and lets controls wrap instead of overflowing. */
+  @media (max-width: 480px) {
+    body { padding: 12px; }
+    .head { padding: 28px 18px 20px; }
+    .stage { padding: 8px 18px 4px; }
+    .legend { padding: 0 18px 4px; gap: 16px; }
+    .controls { padding: 16px 18px 24px; flex-wrap: wrap; }
+    .error { margin: 0 18px 20px; }
+    .report { padding: 22px 18px 8px; }
+    .credit { padding: 16px 18px 20px; }
+    .bar { padding: 10px 14px; flex-wrap: wrap; row-gap: 4px; }
+    .score-value { font-size: 36px; }
+  }
 </style>
 </head>
 <body>
