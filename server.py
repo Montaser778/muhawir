@@ -18,10 +18,12 @@ from pathlib import Path
 import aiohttp
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from report import render_markdown
+from store import store
 
 load_dotenv()
 
@@ -37,6 +39,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 AGENT_NAME = os.getenv("PIPECAT_AGENT_NAME", "muhawir")
 PIPECAT_API_KEY = os.getenv("PIPECAT_API_KEY", "")
 START_URL = f"https://api.pipecat.daily.co/v1/public/{AGENT_NAME}/start"
+
+# Shared secret between this server and the bot. Without it, anyone could POST
+# a fabricated report for any session id.
+INGEST_TOKEN = os.getenv("REPORT_INGEST_TOKEN", "")
 
 if not PIPECAT_API_KEY:
     log.warning("PIPECAT_API_KEY is unset — /api/connect will fail with 500.")
@@ -93,10 +99,30 @@ async def connect():
 
 
 # ── Reports ──────────────────────────────────────────────────────────────
-# These still read the in-process store, which is now always empty: the bot
-# writes its store inside the Pipecat Cloud container, not here. They stay
-# so the client contract holds, and start returning real data as soon as
-# store.py is pointed at shared storage (S3, Postgres, Supabase).
+# The bot runs in a different container, so it pushes its finished report
+# here rather than the browser reading the bot's own store. Storage is this
+# process's memory: enough for the minute of polling that follows a call,
+# and lost on restart. Durable storage is a change to store.py alone.
+
+
+@app.post("/api/report/{session_id}")
+async def ingest_report(session_id: str, request: Request):
+    """Called by the bot when scoring finishes. Not for browsers."""
+    if not INGEST_TOKEN or request.headers.get("X-Ingest-Token") != INGEST_TOKEN:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    body = await request.json()
+    status = body.get("status", "ready")
+
+    if status == "ready" and body.get("report"):
+        store.save(session_id, body["report"])
+    else:
+        store.create(session_id, body.get("role", ""), body.get("language", ""))
+        store.set_status(session_id, status, body.get("error"))
+
+    log.info("Report ingested for %s (%s)", session_id, status)
+    return JSONResponse({"ok": True})
+
 
 
 @app.get("/api/report/{session_id}")

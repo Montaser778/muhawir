@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
     aiohttp \
-    python-dotenv
+    python-dotenv \
+    openai
 
 COPY server.py .
 COPY report.py .
