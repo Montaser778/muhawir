@@ -242,8 +242,8 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
         idle_timeout_secs=180,
     )
 
-    @transport.event_handler("on_client_connected")
-    async def _on_connected(_transport, _client):
+    @transport.event_handler("on_first_participant_joined")
+    async def _on_connected(_transport, _participant):
         log.info("Candidate connected — session %s", session.session_id)
         context.add_message({"role": "user", "content": opening_instruction(settings)})
         await task.queue_frames([LLMRunFrame()])
