@@ -1,30 +1,29 @@
-"""FastAPI server: WebRTC signalling plus the static client.
+"""FastAPI server: serves the client and brokers Pipecat Cloud sessions.
 
-Streamlit cannot do this. Real-time bidirectional audio needs a peer
-connection that stays open for the whole call, and Streamlit's execution
-model re-runs the script on every interaction. That is the reason this
-project is a FastAPI app.
+The bot no longer runs here. It runs on Pipecat Cloud over Daily, which is
+what fixed the ICE failures this architecture used to hit on Fly. What is
+left in this process is deliberately small:
+
+  * serve static/index.html
+  * exchange a POST /api/connect for a Daily room + token
+
+The Pipecat public API key stays server-side. Calling /start straight from
+the browser would expose it in devtools to anyone who opens the page.
 """
 
-import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiohttp
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pipecat.transports.smallwebrtc.connection import IceServer
-from pipecat.transports.smallwebrtc.request_handler import (
-    SmallWebRTCRequest,
-    SmallWebRTCRequestHandler,
-)
 
-from interview.report import render_markdown
-from interview.store import store
+from report import render_markdown
+from store import store
 
 load_dotenv()
 
@@ -36,88 +35,74 @@ logging.basicConfig(
 log = logging.getLogger("server")
 
 STATIC_DIR = Path(__file__).parent / "static"
-_background_tasks: set[asyncio.Task] = set()
 
-TURN_USER = os.getenv("TURN_USERNAME")
-TURN_PASS = os.getenv("TURN_CREDENTIAL")
+AGENT_NAME = os.getenv("PIPECAT_AGENT_NAME", "muhawir")
+PIPECAT_API_KEY = os.getenv("PIPECAT_API_KEY", "")
+START_URL = f"https://api.pipecat.daily.co/v1/public/{AGENT_NAME}/start"
 
-if not TURN_USER or not TURN_PASS:
-    log.warning(
-        "TURN credentials missing (TURN_USERNAME / TURN_CREDENTIAL). "
-        "Local calls will work, but remote calls will fail ICE with 401."
-    )
-else:
-    log.info("TURN credentials loaded for user %s***", TURN_USER[:6])
-
-TURN_ONLY = os.getenv("TURN_ONLY", "1") == "1"
-
-if TURN_ONLY:
-    # Relay-only: forces every candidate through TURN. Slower to gather but
-    # survives symmetric NAT on both ends, which is what breaks direct paths.
-    ICE_SERVERS = [
-        IceServer(
-            urls="turn:global.relay.metered.ca:443?transport=tcp",
-            username=TURN_USER,
-            credential=TURN_PASS,
-        ),
-        IceServer(
-            urls="turn:global.relay.metered.ca:80?transport=tcp",
-            username=TURN_USER,
-            credential=TURN_PASS,
-        ),
-    ]
-    log.info("ICE mode: TURN relay only (%d servers)", len(ICE_SERVERS))
-else:
-    ICE_SERVERS = [
-        IceServer(urls="stun:stun.l.google.com:19302"),
-        IceServer(
-            urls="turn:global.relay.metered.ca:443?transport=tcp",
-            username=TURN_USER,
-            credential=TURN_PASS,
-        ),
-    ]
-    log.info("ICE mode: STUN + TURN (%d servers)", len(ICE_SERVERS))
-
-webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    log.info("Interview agent ready on http://localhost:%s", os.getenv("PORT", "7860"))
-    yield
-    await webrtc_handler.close()
-    for task in list(_background_tasks):
-        task.cancel()
+if not PIPECAT_API_KEY:
+    log.warning("PIPECAT_API_KEY is unset — /api/connect will fail with 500.")
 
 
-app = FastAPI(title="Voice Interview Agent", lifespan=lifespan)
+app = FastAPI(title="Muhawir")
 
 
-async def _launch_bot(connection) -> None:
-    # Imported lazily so a missing API key surfaces per-call, not at boot.
-    from bot import run_bot
+@app.post("/api/connect")
+async def connect():
+    """Start an agent session and hand the browser a room to join.
+
+    Cold starts are real: with min_agents at 0 the first request waits for a
+    container, so the client should show a spinner rather than assume this
+    returns instantly.
+    """
+    if not PIPECAT_API_KEY:
+        return JSONResponse({"error": "Server missing PIPECAT_API_KEY"}, status_code=500)
+
+    payload = {
+        "createDailyRoom": True,
+        # Anything in "body" arrives at the bot as runner_args.body — the hook
+        # for per-call config (candidate name, role) once the client sends it.
+        "body": {},
+    }
 
     try:
-        await run_bot(connection)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                START_URL,
+                headers={"Authorization": f"Bearer {PIPECAT_API_KEY}"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    log.error("Pipecat /start returned %s: %s", resp.status, data)
+                    return JSONResponse(
+                        {"error": data.get("error", "Failed to start session")},
+                        status_code=resp.status,
+                    )
     except Exception:
-        log.exception("Interview session ended with an error")
+        log.exception("Could not reach Pipecat Cloud")
+        return JSONResponse({"error": "Could not reach Pipecat Cloud"}, status_code=502)
+
+    log.info("Session started for agent %s", AGENT_NAME)
+    return JSONResponse(
+        {
+            "room_url": data.get("dailyRoom"),
+            "token": data.get("dailyToken"),
+            "session_id": data.get("sessionId"),
+        }
+    )
 
 
-@app.post("/api/offer")
-async def offer(request: SmallWebRTCRequest):
-    """WebRTC signalling endpoint. The browser posts an SDP offer here."""
-
-    async def on_connection(connection):
-        task = asyncio.create_task(_launch_bot(connection))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-
-    answer = await webrtc_handler.handle_web_request(request, on_connection)
-    return JSONResponse(answer)
+# ── Reports ──────────────────────────────────────────────────────────────
+# These still read the in-process store, which is now always empty: the bot
+# writes its store inside the Pipecat Cloud container, not here. They stay
+# so the client contract holds, and start returning real data as soon as
+# store.py is pointed at shared storage (S3, Postgres, Supabase).
 
 
 @app.get("/api/report/{session_id}")
 async def get_report(session_id: str):
-    """Poll target for the client. Returns a status until the report is ready."""
     record = store.get(session_id)
     if record is None:
         return JSONResponse({"status": "unknown"}, status_code=404)
@@ -126,7 +111,6 @@ async def get_report(session_id: str):
 
 @app.get("/api/report/{session_id}/download")
 async def download_report(session_id: str):
-    """Markdown version, as a file the candidate can keep."""
     record = store.get(session_id)
     if record is None or not record.report:
         return JSONResponse({"error": "Report not available"}, status_code=404)
@@ -140,7 +124,6 @@ async def download_report(session_id: str):
 
 @app.get("/api/sessions")
 async def list_sessions():
-    """Recent sessions. This is the seed of the admin view."""
     return JSONResponse([r.summary() for r in store.list_recent()])
 
 
@@ -148,7 +131,8 @@ async def list_sessions():
 async def health():
     return {
         "status": "ok",
-        "role": os.getenv("INTERVIEW_ROLE", "Machine Learning Engineer"),
+        "agent": AGENT_NAME,
+        "key_configured": bool(PIPECAT_API_KEY),
     }
 
 
@@ -164,6 +148,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "7860")),
+        port=int(os.getenv("PORT", "8080")),
         reload=bool(os.getenv("DEV_RELOAD")),
     )

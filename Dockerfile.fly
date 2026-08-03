@@ -1,14 +1,22 @@
-FROM dailyco/pipecat-base:latest
+# Front-end + /start proxy only. The bot lives on Pipecat Cloud, so none of
+# the audio stack belongs in this image — it stays small and builds fast.
+FROM python:3.12-slim
 
-# aiortc (via pipecat's webrtc extra) needs these at runtime for audio codecs.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libopus0 \
-        libvpx-dev \
-        ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-COPY requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn \
+    aiohttp \
+    python-dotenv
 
-COPY bot.py bot.py
-COPY interview/ interview/
+COPY server.py .
+COPY report.py .
+COPY store.py .
+COPY rubric.py .
+COPY config.py .
+COPY static/ static/
+
+EXPOSE 8080
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
