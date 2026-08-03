@@ -1,6 +1,8 @@
-pipecat-ai[groq,cartesia,silero,webrtc]==1.6.0
-fastapi>=0.115
-uvicorn[standard]>=0.30
-python-dotenv>=1.0
-openai>=1.40
-requests>=2.31
+# ── Pipecat + الخدمات ──────────────────────────────
+pipecat-ai[daily,groq,cartesia,silero]==1.6.0
+
+# ── وقت تشغيل Pipecat Cloud ────────────────────────
+pipecatcloud
+
+# ── أدوات مساعدة ───────────────────────────────────
+python-dotenv

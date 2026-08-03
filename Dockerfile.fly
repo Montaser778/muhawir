@@ -1,0 +1,14 @@
+FROM dailyco/pipecat-base:latest
+
+# aiortc (via pipecat's webrtc extra) needs these at runtime for audio codecs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libopus0 \
+        libvpx-dev \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY bot.py bot.py
+COPY interview/ interview/

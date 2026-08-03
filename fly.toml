@@ -23,3 +23,13 @@ primary_region = "fra"
   memory = "1gb"
   cpu_kind = "shared"
   cpus = 1
+
+agent_name = "muhawir"
+
+image = "eng7montaser/muhawir:0.1"
+
+secret_set = "muhawir-secrets"
+
+[scaling]
+
+	min_agents = 0

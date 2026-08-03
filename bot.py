@@ -12,6 +12,11 @@ The scorer hangs off the side of the pipeline, never inside it. Anything
 placed inline between STT and TTS is paid for in latency on every single
 turn, so only the three services that must be there are there.
 
+Entry point is `bot(runner_args)`, which is what both the local development
+runner and Pipecat Cloud call — once per session. The transport is built
+from runner_args rather than constructed here, so the same file runs against
+Daily (Pipecat Cloud, managed TURN) and SmallWebRTC (local) with no edits.
+
 Verified against pipecat-ai 1.6.0.
 """
 
@@ -38,11 +43,12 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.runner.types import RunnerArguments
+from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.groq.stt import GroqSTTService
-from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from interview.config import settings
 from interview.prompts import interviewer_system_prompt, opening_instruction
@@ -145,7 +151,7 @@ class AnswerProbe(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def build_pipeline(transport: SmallWebRTCTransport, tap: TranscriptTap):
+def build_pipeline(transport: BaseTransport, tap: TranscriptTap):
     stt = GroqSTTService(
         api_key=settings.groq_api_key,
         model=settings.stt_model,
@@ -202,14 +208,45 @@ def build_pipeline(transport: SmallWebRTCTransport, tap: TranscriptTap):
     )
 
 
-async def run_bot(webrtc_connection) -> None:
-    """Entry point for one interview call."""
-    settings.validate()
+def _transport_params():
+    """Per-transport config. Daily is what Pipecat Cloud hands us; webrtc is
+    the local path. Both want the same thing: audio in, audio out."""
+    params = {
+        "webrtc": lambda: TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+        ),
+    }
 
-    # pc_id is handed back to the browser in the SDP answer, so using it as
-    # the session id means the client can poll for its own report with no
-    # extra plumbing.
-    session_id = getattr(webrtc_connection, "pc_id", None) or uuid.uuid4().hex[:12]
+    # Daily's params class only exists when the [daily] extra is installed,
+    # which is true in the deployed image but not necessarily on a dev box.
+    try:
+        from pipecat.transports.daily.transport import DailyParams
+
+        params["daily"] = lambda: DailyParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+        )
+    except ImportError:
+        log.debug("Daily transport not installed; webrtc only.")
+
+    return params
+
+
+async def bot(runner_args: RunnerArguments) -> None:
+    """Entry point. The runner calls this once per session.
+
+    Pipecat Cloud and the local dev runner both land here; the only
+    difference is which transport create_transport() hands back.
+    """
+    transport = await create_transport(runner_args, _transport_params())
+    session_id = getattr(runner_args, "session_id", None) or uuid.uuid4().hex[:12]
+    await run_interview(transport, session_id)
+
+
+async def run_interview(transport: BaseTransport, session_id: str) -> None:
+    """One interview call, from first question to written report."""
+    settings.validate()
 
     session = Session(
         session_id=session_id,
@@ -219,11 +256,6 @@ async def run_bot(webrtc_connection) -> None:
     store.create(session_id, settings.role, settings.language)
     evaluator = Evaluator(settings.groq_api_key, settings.scorer_model)
     tap = TranscriptTap(session, evaluator)
-
-    transport = SmallWebRTCTransport(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
-    )
 
     pipeline, context = build_pipeline(transport, tap)
 
@@ -280,3 +312,9 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
         report["overall_score"],
         report["p50_response_latency_ms"],
     )
+
+
+if __name__ == "__main__":
+    from pipecat.runner.run import main
+
+    main()
