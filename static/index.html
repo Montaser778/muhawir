@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/@daily-co/daily-js"></script>
 <style>
   :root {
     --bg: #0a0b0d;
@@ -117,7 +118,7 @@
     margin: 0 0 14px;
   }
 
-  .sub { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 46ch; }
+  .sub { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 46ch; white-space: pre-line; }
 
   /* ── Signature: two voices on one baseline ──────────────── */
   .stage { padding: 8px 32px 4px; }
@@ -295,8 +296,11 @@
     <p class="eyebrow" id="eyebrow">Mock interview</p>
     <h1 id="role">Machine Learning Engineer</h1>
     <p class="sub" id="sub">
-      A voice interview that adapts to your answers. Speak naturally — you can
-      interrupt at any time. Your scored report is written when the call ends.
+      A voice interview that adapts to your answers.
+
+      Speak naturally — you can interrupt at any time.
+
+      Your scored report is written when the call ends.
     </p>
   </header>
 
@@ -341,7 +345,7 @@
 /* ── Copy ──────────────────────────────────────────────────── */
 const STRINGS = {
   eyebrow: "Mock interview",
-  sub: "A voice interview that adapts to your answers. Speak naturally — you can interrupt at any time. Your scored report is written when the call ends.",
+  sub: "A voice interview that adapts to your answers.\n\nSpeak naturally — you can interrupt at any time.\n\nYour scored report is written when the call ends.",
   you: "You",
   them: "Interviewer",
   start: "Start interview",
@@ -350,6 +354,7 @@ const STRINGS = {
   idle: "Not connected",
   mic: "Requesting microphone",
   connecting: "Connecting",
+  waking: "Waking the interviewer",
   live: "Live",
   ended: "Call ended",
   hintMic: "Microphone access required",
@@ -416,7 +421,10 @@ function applyStrings() {
   els.download.textContent = t("download");
 }
 
-let pc = null, localStream = null, statsTimer = null, rafId = null;
+/* Daily owns the peer connection now. The bot runs on Pipecat Cloud and
+   joins the same room from its side, so nothing here does SDP, ICE or TURN
+   any more — that whole layer is what kept failing on the old setup. */
+let call = null, statsTimer = null, rafId = null;
 let audioCtx = null, analysers = { you: null, them: null };
 
 /* ── Status helpers ───────────────────────────────────────── */
@@ -445,18 +453,20 @@ function setupCanvas() {
   return ctx;
 }
 
-function attachAnalyser(stream, key) {
+function attachAnalyser(track, key) {
+  if (!track) return;
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") audioCtx.resume();
+
+  const stream = new MediaStream([track]);
   const source = audioCtx.createMediaStreamSource(stream);
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 1024;
   analyser.smoothingTimeConstant = 0.75;
   source.connect(analyser);
-  // A remote WebRTC track's analyser often stays silent unless the graph is
-  // pulled all the way to the destination. Route it through a muted node so
-  // that happens without doubling playback (which already comes from the
-  // plain <audio> element).
+  // A remote track's analyser often stays silent unless the graph is pulled
+  // all the way to the destination. Route it through a muted node so that
+  // happens without doubling playback (which already comes from <audio>).
   const silence = audioCtx.createGain();
   silence.gain.value = 0;
   analyser.connect(silence);
@@ -507,15 +517,17 @@ function draw() {
 
 /* ── Connection stats ─────────────────────────────────────── */
 async function pollStats() {
-  if (!pc) return;
-  const stats = await pc.getStats();
-  stats.forEach((report) => {
-    if (report.type === "candidate-pair" && report.state === "succeeded") {
-      if (report.currentRoundTripTime != null) {
-        els.rtt.textContent = Math.round(report.currentRoundTripTime * 1000) + " ms";
-      }
-    }
-  });
+  if (!call) return;
+  try {
+    const { stats } = await call.getNetworkStats();
+    const latest = stats && stats.latest;
+    // Field naming has moved around between daily-js versions, so read
+    // whichever round-trip figure this build exposes rather than assuming.
+    const rtt = latest && (latest.rtt ?? latest.networkRoundTripTime);
+    if (rtt != null) els.rtt.textContent = Math.round(rtt * 1000) + " ms";
+  } catch (err) {
+    /* stats are cosmetic; never let them break a call */
+  }
 }
 
 /* ── Call lifecycle ───────────────────────────────────────── */
@@ -524,14 +536,21 @@ async function start() {
   els.report.hidden = true;
   clearInterval(pollTimer);
   els.start.disabled = true;
-  setStatus(t("mic"), "wait");
+  setStatus(t("waking"), "wait");
 
+  // The agent scales from zero, so the first request of the day pays a cold
+  // start. This can take ten seconds or so; the status dot covers the wait.
+  let room, token;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    const response = await fetch("/api/connect", { method: "POST" });
+    if (!response.ok) throw new Error("Server returned " + response.status);
+    const data = await response.json();
+    room = data.room_url;
+    token = data.token;
+    sessionId = data.session_id || null;
+    if (!room) throw new Error("No room in response");
   } catch (err) {
-    showError(t("errMic"));
+    showError(t("errServer"));
     setStatus(t("idle"));
     els.start.disabled = false;
     return;
@@ -539,106 +558,58 @@ async function start() {
 
   setStatus(t("connecting"), "wait");
 
-  pc = new RTCPeerConnection({
-  iceServers: [
-      {
-        urls: "stun:stun.relay.metered.ca:80",
-      },
-      {
-        urls: "turn:global.relay.metered.ca:80",
-        username: "d31686b1ea6b7f1c309647f0",
-        credential: "H+hg4VUVNyubzdzx",
-      },
-      {
-        urls: "turn:global.relay.metered.ca:80?transport=tcp",
-        username: "d31686b1ea6b7f1c309647f0",
-        credential: "H+hg4VUVNyubzdzx",
-      },
-      {
-        urls: "turn:global.relay.metered.ca:443",
-        username: "d31686b1ea6b7f1c309647f0",
-        credential: "H+hg4VUVNyubzdzx",
-      },
-      {
-        urls: "turns:global.relay.metered.ca:443?transport=tcp",
-        username: "d31686b1ea6b7f1c309647f0",
-        credential: "H+hg4VUVNyubzdzx",
-      },
-  ],
+  call = DailyIframe.createCallObject({
+    audioSource: true,
+    videoSource: false,
+    subscribeToTracksAutomatically: true,
   });
 
-  localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-  pc.addTransceiver("audio", { direction: "recvonly" });
-
-  pc.ontrack = (event) => {
-    els.remote.srcObject = event.streams[0];
-    attachAnalyser(event.streams[0], "them");
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "connected") {
-      setStatus(t("live"), "live");
-      els.hint.textContent = t("hintLive");
-    } else if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-      stop();
+  call.on("track-started", (event) => {
+    if (!event.track || event.track.kind !== "audio") return;
+    if (event.participant && event.participant.local) {
+      attachAnalyser(event.track, "you");
+    } else {
+      els.remote.srcObject = new MediaStream([event.track]);
+      attachAnalyser(event.track, "them");
     }
-  };
+  });
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+  call.on("joined-meeting", () => {
+    setStatus(t("live"), "live");
+    els.hint.textContent = t("hintLive");
+    setupCanvas();
+    draw();
+    statsTimer = setInterval(pollStats, 1000);
+    els.stop.hidden = false;
+  });
 
-  // Wait for ICE gathering so a single POST carries a complete offer.
-  await new Promise((resolve) => {
-    if (pc.iceGatheringState === "complete") return resolve();
-    const check = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
-      }
-    };
-    pc.addEventListener("icegatheringstatechange", check);
-    setTimeout(resolve, 2500); // don't hang forever on a slow network
+  call.on("left-meeting", () => stop());
+  call.on("error", () => {
+    showError(t("errServer"));
+    stop();
   });
 
   try {
-    const response = await fetch("/api/offer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sdp: pc.localDescription.sdp,
-        type: pc.localDescription.type,
-        pc_id: null,
-        restart_pc: false,
-      }),
-    });
-    if (!response.ok) throw new Error("Server returned " + response.status);
-    const answer = await response.json();
-    sessionId = answer.pc_id || null;
-    await pc.setRemoteDescription(answer);
+    await call.join({ url: room, token });
   } catch (err) {
-    showError(t("errServer"));
+    // A join failure here is almost always a blocked microphone: Daily asks
+    // for it as part of joining rather than up front.
+    showError(t("errMic"));
     setStatus(t("idle"));
-    await stop();
-    return;
+    els.start.disabled = false;
+    await teardown();
   }
-
-  attachAnalyser(localStream, "you");
-  setupCanvas();
-  draw();
-
-  statsTimer = setInterval(pollStats, 1000);
-  els.stop.hidden = false;
 }
 
-async function stop() {
+async function teardown() {
   clearInterval(statsTimer);
   cancelAnimationFrame(rafId);
   analysers = { you: null, them: null };
 
-  if (localStream) localStream.getTracks().forEach((t) => t.stop());
-  if (pc) pc.close();
-  pc = null;
-  localStream = null;
+  if (call) {
+    try { await call.destroy(); } catch (err) { /* already gone */ }
+    call = null;
+  }
 
   // Closed rather than reused: a stale AudioContext across repeat calls in
   // the same tab leaves orphaned nodes from the previous call's tracks,
@@ -647,6 +618,15 @@ async function stop() {
     await audioCtx.close();
     audioCtx = null;
   }
+}
+
+let stopping = false;
+
+async function stop() {
+  if (stopping) return; // left-meeting and the button can both land here
+  stopping = true;
+
+  await teardown();
 
   setStatus(t("ended"));
   els.rtt.textContent = "—";
@@ -659,6 +639,7 @@ async function stop() {
   ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
 
   if (sessionId) pollForReport();
+  stopping = false;
 }
 
 /* ── Report ───────────────────────────────────────────────── */
@@ -669,7 +650,7 @@ function pollForReport() {
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     attempts++;
-    // Scoring drains for at most 30s server-side; give it 60s of headroom.
+    // Scoring drains for at most 30s bot-side; give it 60s of headroom.
     if (attempts > 30) {
       clearInterval(pollTimer);
       els.hint.textContent = t("reportFailed");
@@ -748,14 +729,14 @@ function escapeHtml(value) {
 }
 
 els.start.addEventListener("click", start);
-els.stop.addEventListener("click", stop);
-window.addEventListener("resize", () => { if (pc) setupCanvas(); });
+els.stop.addEventListener("click", () => call && call.leave());
+window.addEventListener("resize", () => { if (call) setupCanvas(); });
 
 applyStrings();
 
 fetch("/api/health")
   .then((r) => r.json())
-  .then((d) => { els.role.textContent = d.role; })
+  .then((d) => { if (d.role) els.role.textContent = d.role; })
   .catch(() => {});
 </script>
 </body>
