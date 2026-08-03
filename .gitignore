@@ -12,3 +12,6 @@ reports/
 files*.zip
 
 .env
+
+b.log
+build.log
