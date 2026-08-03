@@ -118,7 +118,32 @@
     margin: 0 0 14px;
   }
 
-  .sub { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 46ch; white-space: pre-line; }
+  .sub {
+    margin: 0 0 16px;
+    color: var(--text);
+    font-size: 17px;
+    line-height: 1.5;
+    max-width: 42ch;
+    text-wrap: pretty;
+  }
+
+  .notes {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .notes span::before {
+    content: "·";
+    margin-right: 10px;
+    color: var(--line);
+  }
+  .notes span:first-child::before { content: none; margin: 0; }
 
   /* ── Signature: two voices on one baseline ──────────────── */
   .stage { padding: 8px 32px 4px; }
@@ -295,12 +320,10 @@
   <header class="head">
     <p class="eyebrow" id="eyebrow">Mock interview</p>
     <h1 id="role">Machine Learning Engineer</h1>
-    <p class="sub" id="sub">
-      A voice interview that adapts to your answers.
-
-      Speak naturally — you can interrupt at any time.
-
-      Your scored report is written when the call ends.
+    <p class="sub" id="sub">A voice interview that adapts to your answers.</p>
+    <p class="notes">
+      <span id="noteSpeak">Speak naturally — interrupt any time</span>
+      <span id="noteReport">Scored report when the call ends</span>
     </p>
   </header>
 
@@ -345,7 +368,9 @@
 /* ── Copy ──────────────────────────────────────────────────── */
 const STRINGS = {
   eyebrow: "Mock interview",
-  sub: "A voice interview that adapts to your answers.\n\nSpeak naturally — you can interrupt at any time.\n\nYour scored report is written when the call ends.",
+  sub: "A voice interview that adapts to your answers.",
+  noteSpeak: "Speak naturally — interrupt any time",
+  noteReport: "Scored report when the call ends",
   you: "You",
   them: "Interviewer",
   start: "Start interview",
@@ -394,6 +419,8 @@ const els = {
   canvas: document.getElementById("wave"),
   eyebrow: document.getElementById("eyebrow"),
   sub: document.getElementById("sub"),
+  noteSpeak: document.getElementById("noteSpeak"),
+  noteReport: document.getElementById("noteReport"),
   legendYou: document.getElementById("legendYou"),
   legendThem: document.getElementById("legendThem"),
   report: document.getElementById("report"),
@@ -411,6 +438,8 @@ let pollTimer = null;
 function applyStrings() {
   els.eyebrow.textContent = t("eyebrow");
   els.sub.textContent = t("sub");
+  els.noteSpeak.textContent = t("noteSpeak");
+  els.noteReport.textContent = t("noteReport");
   els.legendYou.textContent = t("you");
   els.legendThem.textContent = t("them");
   els.start.textContent = t("start");
