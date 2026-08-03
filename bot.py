@@ -12,22 +12,29 @@ The scorer hangs off the side of the pipeline, never inside it. Anything
 placed inline between STT and TTS is paid for in latency on every single
 turn, so only the three services that must be there are there.
 
-Entry point is `bot(runner_args)`, which is what both the local development
-runner and Pipecat Cloud call — once per session. The transport is built
-from runner_args rather than constructed here, so the same file runs against
-Daily (Pipecat Cloud, managed TURN) and SmallWebRTC (local) with no edits.
-
 Verified against pipecat-ai 1.6.0.
+
+Runs in two places:
+  * locally, over SmallWebRTC (server.py drives it)
+  * on Pipecat Cloud, over Daily (the `bot` coroutine at the bottom)
 """
 
-import asyncio
-import logging
-import time
-import uuid
+import os
+import sys
 
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import (
+# The Pipecat Cloud runner imports this module from outside /app, so the
+# project root is not on sys.path and `import interview.*` fails with
+# ModuleNotFoundError. Must run before any first-party import below.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import asyncio  # noqa: E402
+import logging  # noqa: E402
+import time  # noqa: E402
+import uuid  # noqa: E402
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: E402
+from pipecat.audio.vad.vad_analyzer import VADParams  # noqa: E402
+from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     EndFrame,
     Frame,
@@ -36,25 +43,25 @@ from pipecat.frames.frames import (
     TTSTextFrame,
     UserStoppedSpeakingFrame,
 )
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.runner.types import RunnerArguments
-from pipecat.runner.utils import create_transport
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.services.groq.llm import GroqLLMService
-from pipecat.services.groq.stt import GroqSTTService
-from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
+from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
+from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: E402
+from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
+from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
+    LLMContextAggregatorPair,
+)
+from pipecat.processors.audio.vad_processor import VADProcessor  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
+from pipecat.services.cartesia.tts import CartesiaTTSService  # noqa: E402
+from pipecat.services.groq.llm import GroqLLMService  # noqa: E402
+from pipecat.services.groq.stt import GroqSTTService  # noqa: E402
+from pipecat.transports.base_transport import BaseTransport, TransportParams  # noqa: E402
 
-from interview.config import settings
-from interview.prompts import interviewer_system_prompt, opening_instruction
-from interview.report import Session, build_report, save
-from interview.rubric import Evaluator
-from interview.store import store
+from config import settings
+from prompts import interviewer_system_prompt, opening_instruction
+from report import Session, build_report, save
+from rubric import Evaluator
+from store import store
 
 log = logging.getLogger(__name__)
 
@@ -208,44 +215,12 @@ def build_pipeline(transport: BaseTransport, tap: TranscriptTap):
     )
 
 
-def _transport_params():
-    """Per-transport config. Daily is what Pipecat Cloud hands us; webrtc is
-    the local path. Both want the same thing: audio in, audio out."""
-    params = {
-        "webrtc": lambda: TransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-        ),
-    }
+async def run_session(transport: BaseTransport, session_id: str) -> None:
+    """One interview call, transport-agnostic.
 
-    # Daily's params class only exists when the [daily] extra is installed,
-    # which is true in the deployed image but not necessarily on a dev box.
-    try:
-        from pipecat.transports.daily.transport import DailyParams
-
-        params["daily"] = lambda: DailyParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-        )
-    except ImportError:
-        log.debug("Daily transport not installed; webrtc only.")
-
-    return params
-
-
-async def bot(runner_args: RunnerArguments) -> None:
-    """Entry point. The runner calls this once per session.
-
-    Pipecat Cloud and the local dev runner both land here; the only
-    difference is which transport create_transport() hands back.
+    Takes a ready-made transport so the same body serves both SmallWebRTC
+    locally and Daily on Pipecat Cloud.
     """
-    transport = await create_transport(runner_args, _transport_params())
-    session_id = getattr(runner_args, "session_id", None) or uuid.uuid4().hex[:12]
-    await run_interview(transport, session_id)
-
-
-async def run_interview(transport: BaseTransport, session_id: str) -> None:
-    """One interview call, from first question to written report."""
     settings.validate()
 
     session = Session(
@@ -289,6 +264,22 @@ async def run_interview(transport: BaseTransport, session_id: str) -> None:
         await _finalise(session, evaluator)
 
 
+async def run_bot(webrtc_connection) -> None:
+    """Local entry point — kept so server.py keeps working unchanged."""
+    from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+    # pc_id is handed back to the browser in the SDP answer, so using it as
+    # the session id means the client can poll for its own report with no
+    # extra plumbing.
+    session_id = getattr(webrtc_connection, "pc_id", None) or uuid.uuid4().hex[:12]
+
+    transport = SmallWebRTCTransport(
+        webrtc_connection=webrtc_connection,
+        params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
+    )
+    await run_session(transport, session_id)
+
+
 async def _finalise(session: Session, evaluator: Evaluator) -> None:
     """Wait for in-flight scoring, then write the report."""
     store.set_status(session.session_id, "scoring")
@@ -314,7 +305,32 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
     )
 
 
-if __name__ == "__main__":
-    from pipecat.runner.run import main
+# ── Pipecat Cloud entry point ────────────────────────────────────────────
+# The platform imports this module and awaits bot(runner_args). Daily is the
+# transport there; the webrtc branch keeps `pipecat run bot.py` usable locally.
 
-    main()
+
+async def bot(runner_args) -> None:
+    from pipecat.runner.utils import create_transport
+    from pipecat.transports.daily.transport import DailyParams
+
+    transport_params = {
+        "daily": lambda: DailyParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+        ),
+        "webrtc": lambda: TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+        ),
+    }
+
+    transport = await create_transport(runner_args, transport_params)
+
+    session_id = (
+        getattr(runner_args, "session_id", None)
+        or getattr(runner_args, "room_url", "").rsplit("/", 1)[-1]
+        or uuid.uuid4().hex[:12]
+    )
+
+    await run_session(transport, session_id)

@@ -1,7 +1,8 @@
-FROM dailyco/pipecat-base:latest
+﻿FROM dailyco/pipecat-base:latest
+
+ENV PYTHONPATH=/app
 
 COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN ls -la /app && echo "---" && ls -la /app/interview /app/static
