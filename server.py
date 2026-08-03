@@ -22,8 +22,6 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from report import render_markdown
-from store import store
 
 load_dotenv()
 
