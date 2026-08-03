@@ -222,6 +222,14 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
     locally and Daily on Pipecat Cloud.
     """
     settings.validate()
+    log.info(
+        "KEYCHECK groq_len=%d groq_ascii=%s cartesia_len=%d cartesia_ascii=%s voice=%r",
+        len(settings.groq_api_key),
+        settings.groq_api_key.isascii(),
+        len(settings.cartesia_api_key),
+        settings.cartesia_api_key.isascii(),
+        settings.tts_voice_id,
+    )
 
     session = Session(
         session_id=session_id,
