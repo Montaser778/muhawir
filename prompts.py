@@ -1,11 +1,11 @@
-"""Prompts for the interviewer.
+﻿"""Prompts for the interviewer.
 
 Everything here is written for *speech*, not text. That constraint drives
 most of the wording: no lists, no markdown, no symbols the TTS will read
 aloud as garbage, and short turns so the candidate can interrupt.
 """
 
-from .config import Settings
+from config import Settings
 
 _SPEECH_RULES_EN = """
 You are speaking out loud. Your words go straight to a text-to-speech engine.

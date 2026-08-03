@@ -1,4 +1,4 @@
-"""Session transcript tracking and the final report.
+﻿"""Session transcript tracking and the final report.
 
 The report is the artifact the candidate keeps. It is also the thing that
 makes the product feel finished rather than experimental.
@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .rubric import DIMENSIONS, TurnEvaluation
+from rubric import DIMENSIONS, TurnEvaluation
 
 
 @dataclass
@@ -86,10 +86,10 @@ def build_report(session: Session, evaluations: list[TurnEvaluation]) -> dict:
 
 def render_markdown(report: dict) -> str:
     lines = [
-        f"# Interview report — {report['role']}",
+        f"# Interview report â€” {report['role']}",
         "",
-        f"Session `{report['session_id']}` · {report['questions_answered']} questions "
-        f"· {report['duration_seconds']}s · median response latency "
+        f"Session `{report['session_id']}` آ· {report['questions_answered']} questions "
+        f"آ· {report['duration_seconds']}s آ· median response latency "
         f"{report['p50_response_latency_ms']} ms",
         "",
         f"**Overall: {report['overall_score']} / 5**",
