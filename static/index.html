@@ -362,7 +362,7 @@
   <p class="credit">Developed by <b>Eng. Montaser Hussam</b></p>
 </main>
 
-<audio id="remote" autoplay playsinline></audio>
+<audio id="remote" autoplay></audio>
 
 <script>
 /* ── Copy ──────────────────────────────────────────────────── */
@@ -560,8 +560,30 @@ async function pollStats() {
 }
 
 /* ── Call lifecycle ───────────────────────────────────────── */
+/* Phones route two-way audio to the earpiece by default, which is why the
+   bot sounds like a phone call until you switch the browser to desktop mode.
+   Two things push it back to the media speaker: claiming the media audio
+   category on the user gesture that starts the call, and asking Daily for
+   the speakerphone once we are in the room. */
+function primeMediaAudio() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0; // inaudible: this exists only to claim the category
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.01);
+    setTimeout(() => ctx.close().catch(() => {}), 300);
+  } catch (err) {
+    /* older browsers just keep their default routing */
+  }
+}
+
 async function start() {
   clearError();
+  primeMediaAudio();
   els.report.hidden = true;
   clearInterval(pollTimer);
   els.start.disabled = true;
@@ -603,7 +625,10 @@ async function start() {
     }
   });
 
-  call.on("joined-meeting", () => {
+  call.on("joined-meeting", async () => {
+    // Not supported on every browser; a failure here is cosmetic.
+    try { await call.setAudioDevice("speakerPhone"); } catch (err) {}
+
     setStatus(t("live"), "live");
     els.hint.textContent = t("hintLive");
     setupCanvas();
