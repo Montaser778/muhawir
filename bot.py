@@ -32,6 +32,8 @@ import logging  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 
+import aiohttp  # noqa: E402
+
 from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: E402
 from pipecat.audio.vad.vad_analyzer import VADParams  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
@@ -57,13 +59,19 @@ from pipecat.services.groq.llm import GroqLLMService  # noqa: E402
 from pipecat.services.groq.stt import GroqSTTService  # noqa: E402
 from pipecat.transports.base_transport import BaseTransport, TransportParams  # noqa: E402
 
-from config import settings
-from prompts import interviewer_system_prompt, opening_instruction
-from report import Session, build_report, save
-from rubric import Evaluator
-from store import store
+from config import settings  # noqa: E402
+from prompts import interviewer_system_prompt, opening_instruction  # noqa: E402
+from report import Session, build_report, save  # noqa: E402
+from rubric import Evaluator  # noqa: E402
+from store import store  # noqa: E402
 
 log = logging.getLogger(__name__)
+
+# Where the finished report goes. The browser polls the front-end server, not
+# this container — which is a different machine that stops as soon as the call
+# ends — so the report has to be pushed there rather than read from here.
+REPORT_SINK_URL = os.getenv("REPORT_SINK_URL", "")
+REPORT_INGEST_TOKEN = os.getenv("REPORT_INGEST_TOKEN", "")
 
 
 class TranscriptTap(FrameProcessor):
@@ -222,14 +230,6 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
     locally and Daily on Pipecat Cloud.
     """
     settings.validate()
-    log.info(
-        "KEYCHECK groq_len=%d groq_ascii=%s cartesia_len=%d cartesia_ascii=%s voice=%r",
-        len(settings.groq_api_key),
-        settings.groq_api_key.isascii(),
-        len(settings.cartesia_api_key),
-        settings.cartesia_api_key.isascii(),
-        settings.tts_voice_id,
-    )
 
     session = Session(
         session_id=session_id,
@@ -288,6 +288,33 @@ async def run_bot(webrtc_connection) -> None:
     await run_session(transport, session_id)
 
 
+async def _push_report(session_id: str, payload: dict) -> None:
+    """Hand the finished report to the front-end server.
+
+    Failure here is logged and swallowed: a report that cannot be delivered
+    is not worth crashing a session that has already finished successfully.
+    """
+    if not REPORT_SINK_URL or not REPORT_INGEST_TOKEN:
+        log.warning("REPORT_SINK_URL / REPORT_INGEST_TOKEN unset; report not pushed.")
+        return
+
+    url = f"{REPORT_SINK_URL.rstrip('/')}/api/report/{session_id}"
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                url,
+                headers={"X-Ingest-Token": REPORT_INGEST_TOKEN},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    log.error("Report push returned %s", resp.status)
+                else:
+                    log.info("Report pushed for session %s", session_id)
+    except Exception:
+        log.exception("Could not push report for session %s", session_id)
+
+
 async def _finalise(session: Session, evaluator: Evaluator) -> None:
     """Wait for in-flight scoring, then write the report."""
     store.set_status(session.session_id, "scoring")
@@ -300,6 +327,10 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
     if not evaluations:
         log.info("No scored turns for session %s; skipping report.", session.session_id)
         store.set_status(session.session_id, "empty")
+        await _push_report(
+            session.session_id,
+            {"status": "empty", "role": session.role, "language": session.language},
+        )
         return
 
     report = build_report(session, evaluations)
@@ -311,6 +342,7 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
         report["overall_score"],
         report["p50_response_latency_ms"],
     )
+    await _push_report(session.session_id, {"status": "ready", "report": report})
 
 
 # ── Pipecat Cloud entry point ────────────────────────────────────────────
