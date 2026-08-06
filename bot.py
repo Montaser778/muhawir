@@ -98,6 +98,17 @@ def _clean_env(name: str, *, redact: bool = False) -> str:
 REPORT_SINK_URL = _clean_env("REPORT_SINK_URL")
 REPORT_INGEST_TOKEN = _clean_env("REPORT_INGEST_TOKEN", redact=True)
 
+# This variable has silently pointed to the wrong place three times now
+# (once malformed with a stray "=", twice pointing somewhere unexpected).
+# _clean_env already warns when it had to repair the value; this states
+# the final, resolved destination unconditionally, once, at startup — the
+# question "where are reports actually going right now" should never
+# require reading source code to answer.
+log.info(
+    "Reports will be pushed to: %s",
+    REPORT_SINK_URL or "(unset — reports will be written locally only, never pushed)",
+)
+
 
 def _sink_config_problem() -> str | None:
     """Return a human-readable reason the report cannot be delivered, or None.
@@ -422,6 +433,17 @@ async def _push_report(session_id: str, payload: dict) -> None:
 async def _finalise(session: Session, evaluator: Evaluator) -> None:
     """Wait for in-flight scoring, then write the report."""
     store.set_status(session.session_id, "scoring")
+    # Pushed to the front-end too, not just set on this container's own
+    # local store — this runs after runner.run(task) has already returned
+    # (the candidate has already hung up), so it's off the live audio path.
+    # Without this push, /report/{session_id} could only ever see "running"
+    # (set by server.py's /api/connect at call start) or the final
+    # ready/empty state — "scoring" would never be a state a shared link
+    # could actually show.
+    await _push_report(
+        session.session_id,
+        {"status": "scoring", "role": session.role, "language": session.language},
+    )
     try:
         evaluations = await asyncio.wait_for(evaluator.drain(), timeout=30)
     except asyncio.TimeoutError:

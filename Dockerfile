@@ -1,5 +1,4 @@
-﻿FROM dailyco/pipecat-base:latest
-
+﻿FROM dailyco/pipecat-base:0.1.27-py3.11
 ENV PYTHONPATH=/app
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8

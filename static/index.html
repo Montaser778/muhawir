@@ -292,7 +292,10 @@
   .turn-note { margin: 0 0 4px; font-size: 13px; line-height: 1.6; }
   .turn-note b { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
 
-  .report-actions { padding: 20px 0 4px; border-top: 1px solid var(--line); }
+  .report-actions {
+    padding: 20px 0 4px; border-top: 1px solid var(--line);
+    display: flex; gap: 12px; flex-wrap: wrap;
+  }
   .download {
     display: inline-block;
     font-family: var(--mono);
@@ -381,6 +384,7 @@
     <div id="dimensions"></div>
     <div id="turns"></div>
     <div class="report-actions">
+      <a class="download" id="shareLink" href="#" target="_blank" rel="noopener">View shareable report</a>
       <a class="download" id="download" href="#" download>Download report</a>
     </div>
   </section>
@@ -424,6 +428,7 @@ const STRINGS = {
   reportEmpty: "No answers were scored. The call ended before you answered a question.",
   reportFailed: "The report could not be generated.",
   download: "Download report",
+  shareLink: "View shareable report",
   strength: "Strength",
   improve: "Improve",
   focus: "Focus area",
@@ -464,6 +469,7 @@ const els = {
   dimensions: document.getElementById("dimensions"),
   turns: document.getElementById("turns"),
   download: document.getElementById("download"),
+  shareLink: document.getElementById("shareLink"),
 };
 
 let sessionId = null;
@@ -482,6 +488,7 @@ function applyStrings() {
   els.status.textContent = t("idle");
   els.reportEyebrow.textContent = t("reportTitle");
   els.download.textContent = t("download");
+  els.shareLink.textContent = t("shareLink");
 }
 
 /* Daily owns the peer connection now. The bot runs on Pipecat Cloud and
@@ -824,6 +831,7 @@ function renderReport(report) {
     .join("");
 
   els.download.href = `/api/report/${encodeURIComponent(sessionId)}/download`;
+  els.shareLink.href = `/report/${encodeURIComponent(sessionId)}`;
   els.report.hidden = false;
   els.report.scrollIntoView({ behavior: "smooth", block: "start" });
 }
