@@ -67,11 +67,51 @@ from store import store  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+
+def _clean_env(name: str, *, redact: bool = False) -> str:
+    """Read an env var and strip the debris that secret managers pick up.
+
+    `pipecat cloud secrets set NAME = value` (with spaces around the equals)
+    stores the literal string "= value". The leading "= " then survives
+    rstrip('/') and produces a URL that aiohttp rejects outright with
+    InvalidUrlClientError before any connection is attempted — which looks
+    exactly like a network failure in the logs but is not one. Same story
+    for values pasted with surrounding quotes or a trailing newline.
+    """
+    raw = os.getenv(name, "")
+    value = raw.strip().strip('"').strip("'").strip()
+    if value.startswith("="):
+        value = value.lstrip("=").strip()
+
+    if raw and raw != value:
+        if redact:
+            log.warning("%s contained stray characters; cleaned before use.", name)
+        else:
+            log.warning("%s cleaned: %r -> %r", name, raw, value)
+    return value
+
+
 # Where the finished report goes. The browser polls the front-end server, not
 # this container — which is a different machine that stops as soon as the call
 # ends — so the report has to be pushed there rather than read from here.
-REPORT_SINK_URL = os.getenv("REPORT_SINK_URL", "")
-REPORT_INGEST_TOKEN = os.getenv("REPORT_INGEST_TOKEN", "")
+REPORT_SINK_URL = _clean_env("REPORT_SINK_URL")
+REPORT_INGEST_TOKEN = _clean_env("REPORT_INGEST_TOKEN", redact=True)
+
+
+def _sink_config_problem() -> str | None:
+    """Return a human-readable reason the report cannot be delivered, or None.
+
+    Checked at session start rather than only at push time: an unusable sink
+    discovered after a full interview means the transcript is already gone.
+    Better to see it in the logs the moment the candidate connects.
+    """
+    if not REPORT_SINK_URL:
+        return "REPORT_SINK_URL is unset"
+    if not REPORT_SINK_URL.startswith(("http://", "https://")):
+        return f"REPORT_SINK_URL is not a valid URL: {REPORT_SINK_URL!r}"
+    if not REPORT_INGEST_TOKEN:
+        return "REPORT_INGEST_TOKEN is unset"
+    return None
 
 
 class TranscriptTap(FrameProcessor):
@@ -231,6 +271,13 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
     """
     settings.validate()
 
+    problem = _sink_config_problem()
+    if problem:
+        # Loud, but not fatal: the interview itself still works, and a live
+        # candidate should never be dropped over a misconfigured sink.
+        log.error("Report delivery is misconfigured (%s) — the report will "
+                  "be written locally but not pushed.", problem)
+
     session = Session(
         session_id=session_id,
         role=settings.role,
@@ -293,26 +340,58 @@ async def _push_report(session_id: str, payload: dict) -> None:
 
     Failure here is logged and swallowed: a report that cannot be delivered
     is not worth crashing a session that has already finished successfully.
+    One retry, because this runs during container shutdown and a single
+    dropped connection should not cost the whole report.
     """
-    if not REPORT_SINK_URL or not REPORT_INGEST_TOKEN:
-        log.warning("REPORT_SINK_URL / REPORT_INGEST_TOKEN unset; report not pushed.")
+    problem = _sink_config_problem()
+    if problem:
+        log.warning("Report not pushed for session %s: %s", session_id, problem)
         return
 
     url = f"{REPORT_SINK_URL.rstrip('/')}/api/report/{session_id}"
-    try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(
-                url,
-                headers={"X-Ingest-Token": REPORT_INGEST_TOKEN},
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    log.error("Report push returned %s", resp.status)
-                else:
-                    log.info("Report pushed for session %s", session_id)
-    except Exception:
-        log.exception("Could not push report for session %s", session_id)
+    log.info("Pushing report for session %s to %s", session_id, url)
+
+    for attempt in (1, 2):
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.post(
+                    url,
+                    headers={"X-Ingest-Token": REPORT_INGEST_TOKEN},
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status >= 400:
+                        # The body is where the server explains itself; without
+                        # it a 4xx is indistinguishable from any other 4xx.
+                        body = (await resp.text())[:500]
+                        log.error(
+                            "Report push returned %s for session %s: %s",
+                            resp.status, session_id, body,
+                        )
+                    else:
+                        log.info(
+                            "Report pushed for session %s (HTTP %s)",
+                            session_id, resp.status,
+                        )
+                    return
+        except aiohttp.InvalidURL:
+            # Malformed URL will never succeed; retrying only hides the cause.
+            log.error(
+                "Report sink URL is malformed: %r — check REPORT_SINK_URL "
+                "for stray characters such as a leading '='.", url,
+            )
+            return
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            if attempt == 1:
+                log.warning(
+                    "Report push failed for session %s; retrying once.", session_id
+                )
+                await asyncio.sleep(1)
+                continue
+            log.exception("Could not push report for session %s", session_id)
+        except Exception:
+            log.exception("Could not push report for session %s", session_id)
+            return
 
 
 async def _finalise(session: Session, evaluator: Evaluator) -> None:
