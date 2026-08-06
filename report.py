@@ -8,6 +8,7 @@ import html
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from rubric import DIMENSIONS, TurnEvaluation
@@ -74,6 +75,7 @@ def build_report(session: Session, evaluations: list[TurnEvaluation]) -> dict:
         "session_id": session.session_id,
         "role": session.role,
         "language": session.language,
+        "started_at": session.started_at,
         "duration_seconds": round(time.time() - session.started_at, 1),
         # Derived from evaluations, not len(session.turns): the caller
         # (bot._finalise) filters out clarification-flagged turns and any
@@ -163,6 +165,14 @@ def render_html(report: dict) -> str:
 
     role = esc(report.get("role", "Interview"))
     session_id = esc(report.get("session_id", ""))
+    # Server-side fallback for browsers with JS disabled; the inline script
+    # below replaces it with the viewer's own local time and format once it
+    # runs, which is more meaningful than a timestamp in the server's zone.
+    _started_dt = datetime.fromtimestamp(report.get("started_at") or time.time())
+    started_label = esc(
+        f"{_started_dt.strftime('%b %d, %Y')} · "
+        f"{_started_dt.strftime('%I:%M %p').lstrip('0')}"
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -189,9 +199,33 @@ def render_html(report: dict) -> str:
     border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
   }}
   .head {{ padding: 36px 32px 20px; border-bottom: 1px solid var(--line); }}
+  .head-top {{
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 0 0 12px;
+  }}
   .eyebrow {{
     font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em;
-    text-transform: uppercase; color: var(--amber); margin: 0 0 12px;
+    text-transform: uppercase; color: var(--amber); margin: 0;
+  }}
+  .share-btn {{
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+    color: var(--muted); background: transparent; border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }}
+  .share-btn:hover {{ border-color: var(--amber); color: var(--amber); }}
+  .share-btn.copied {{ border-color: var(--cyan); color: var(--cyan); }}
+  .share-btn svg {{ width: 13px; height: 13px; flex-shrink: 0; }}
+  .share-btn .share-icon.hidden, .share-btn .check-icon.hidden {{ display: none; }}
+  .share-fallback {{
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: transparent; border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 8px; width: 150px; max-width: 40vw;
+  }}
+  @media (max-width: 480px) {{
+    .share-btn {{ padding: 6px 9px; }}
+    .share-btn .share-label {{ display: none; }}
   }}
   h1 {{ font-size: clamp(24px, 6vw, 34px); margin: 0 0 10px; line-height: 1.1; }}
   .meta {{ font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 0; }}
@@ -235,9 +269,16 @@ def render_html(report: dict) -> str:
 <body>
 <main>
   <div class="head">
-    <p class="eyebrow">Interview report</p>
+    <div class="head-top">
+      <p class="eyebrow">Interview report</p>
+      <button id="shareBtn" class="share-btn" type="button" aria-label="Share this report">
+        <svg class="share-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"/><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"/></svg>
+        <svg class="check-icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span class="share-label">Share</span>
+      </button>
+    </div>
     <h1>{role}</h1>
-    <p class="meta">Session {session_id} · {report.get("questions_answered", 0)} questions · {report.get("duration_seconds", 0)}s</p>
+    <p class="meta"><span id="metaDate" data-ts="{report.get("started_at") or ""}">{started_label}</span> · {report.get("questions_answered", 0)} questions · {report.get("duration_seconds", 0)}s</p>
     <div class="score">
       <span class="score-value">{report.get("overall_score", "—")}</span>
       <span class="score-max">/ 5</span>
@@ -253,6 +294,77 @@ def render_html(report: dict) -> str:
     <a href="/api/report/{session_id}/download">Download markdown</a>
   </div>
 </main>
+<script>
+(function () {{
+  var dateEl = document.getElementById('metaDate');
+  var ts = dateEl && parseFloat(dateEl.getAttribute('data-ts'));
+  if (dateEl && ts) {{
+    try {{
+      dateEl.textContent = new Date(ts * 1000).toLocaleString(undefined, {{
+        dateStyle: 'medium', timeStyle: 'short'
+      }});
+    }} catch (e) {{
+      // Intl.DateTimeFormat options unsupported in this browser — the
+      // server-rendered fallback text already in the DOM stays as-is.
+    }}
+  }}
+
+  var btn = document.getElementById('shareBtn');
+  if (!btn) return;
+  var shareIcon = btn.querySelector('.share-icon');
+  var checkIcon = btn.querySelector('.check-icon');
+  var label = btn.querySelector('.share-label');
+  var revertTimer = null;
+
+  function showCopied() {{
+    shareIcon.classList.add('hidden');
+    checkIcon.classList.remove('hidden');
+    label.textContent = 'Copied!';
+    btn.classList.add('copied');
+    clearTimeout(revertTimer);
+    revertTimer = setTimeout(function () {{
+      shareIcon.classList.remove('hidden');
+      checkIcon.classList.add('hidden');
+      label.textContent = 'Share';
+      btn.classList.remove('copied');
+    }}, 2000);
+  }}
+
+  function fallbackSelectable() {{
+    // Neither Web Share nor Clipboard is available (older browser, or a
+    // non-HTTPS context where clipboard access is blocked outright) — a
+    // button that silently does nothing is worse than no button, so swap
+    // it for a selectable input the user can copy by hand.
+    var input = document.createElement('input');
+    input.className = 'share-fallback';
+    input.readOnly = true;
+    input.value = window.location.href;
+    btn.replaceWith(input);
+    input.focus();
+    input.select();
+  }}
+
+  btn.addEventListener('click', function () {{
+    var url = window.location.href;
+    if (navigator.share) {{
+      navigator.share({{ title: document.title, url: url }}).catch(function (err) {{
+        if (err && err.name === 'AbortError') return; // user cancelled the native sheet
+        copyOrFallback(url);
+      }});
+      return;
+    }}
+    copyOrFallback(url);
+  }});
+
+  function copyOrFallback(url) {{
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(url).then(showCopied).catch(fallbackSelectable);
+    }} else {{
+      fallbackSelectable();
+    }}
+  }}
+}})();
+</script>
 </body>
 </html>"""
 
