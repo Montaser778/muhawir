@@ -1,4 +1,4 @@
-﻿.env
+.env
 *api-key*.txt
 API-KEY.txt
 .venv/
@@ -11,13 +11,6 @@ reports/
 .DS_Store
 files*.zip
 
-.env
-
 b.log
 build.log
-
-agent.log
-
-agent.log
-
 agent.log
