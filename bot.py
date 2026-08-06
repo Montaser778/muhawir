@@ -357,10 +357,7 @@ async def run_session(
     # "Can't continue" state, shared across whichever service errors first.
     # Two strikes, not one: a single transient blip shouldn't end a call
     # that could otherwise finish normally — the same reasoning already
-    # applied to the health-check's own FAILURE_THRESHOLD. A rate-limit or
-    # quota error (the one actually observed in production) won't clear
-    # inside a call's timeframe regardless, so two strikes costs nothing
-    # there either.
+    # applied to the health-check's own FAILURE_THRESHOLD.
     failure_count = 0
     bailed_out = False
 
@@ -371,17 +368,31 @@ async def run_session(
             "%s error (%d/2): %s", processor, failure_count, error_frame.error
         )
         if bailed_out:
-    return
+            return
 
-if failure_count == 1:
-    # 429 means "wait", not "broken". Say something, pause, retry —
-    # returning silently here is what left the candidate in dead air.
-    await task.queue_frames([
-        TTSSpeakFrame("One moment.", append_to_context=False),
-    ])
-    await asyncio.sleep(3)
-    await task.queue_frames([LLMRunFrame()])
-    return
+        # First strike: recover, don't just return.
+        #
+        # This is what produced the "goes silent after question two" bug.
+        # Groq returns 429 (rate limit) once the accumulated context grows
+        # past the per-minute token allowance — usually on the third turn.
+        # The failed turn emits no text and no audio, and the LLM is only
+        # ever invoked again when the candidate speaks. So returning here
+        # left the candidate waiting for a question that would never come,
+        # and the second strike could never arrive either: dead air until
+        # idle_timeout_secs (180s) killed the call. That matches the
+        # observed session durations of 197s and 230s exactly.
+        #
+        # A 429 means "wait", not "broken". Say something so the candidate
+        # knows the line is alive, pause long enough for the rate-limit
+        # window to roll over, then re-run the turn.
+        if failure_count == 1:
+            await task.queue_frames([
+                TTSSpeakFrame("One moment.", append_to_context=False),
+            ])
+            await asyncio.sleep(3)
+            await task.queue_frames([LLMRunFrame()])
+            return
+
         bailed_out = True
         log.error("Interview cannot continue — ending the call and finalising.")
         # Straight to TTS, not the LLM: the LLM is exactly what's likely
