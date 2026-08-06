@@ -8,7 +8,7 @@ import html
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rubric import DIMENSIONS, TurnEvaluation
@@ -75,7 +75,11 @@ def build_report(session: Session, evaluations: list[TurnEvaluation]) -> dict:
         "session_id": session.session_id,
         "role": session.role,
         "language": session.language,
-        "started_at": session.started_at,
+        # ISO 8601 with an explicit UTC offset, not a bare epoch number or a
+        # server-local string — render_html resolves this to the viewer's
+        # own timezone client-side. Never format this into a local string
+        # here; that was the earlier bug (see render_html's fallback).
+        "started_at": datetime.fromtimestamp(session.started_at, tz=timezone.utc).isoformat(),
         "duration_seconds": round(time.time() - session.started_at, 1),
         # Derived from evaluations, not len(session.turns): the caller
         # (bot._finalise) filters out clarification-flagged turns and any
@@ -148,10 +152,18 @@ def render_html(report: dict) -> str:
 
     turn_blocks = "\n".join(
         f'''<div class="turn">
-          <p class="turn-q">{index}. {esc(turn.get("question", ""))}</p>
-          <p class="turn-a">{esc(turn.get("answer", ""))}</p>
-          <p class="turn-note"><b>Strength</b> {esc(turn.get("strength", ""))}</p>
-          <p class="turn-note"><b>Improve</b> {esc(turn.get("improvement", ""))}</p>
+          <p class="turn-q"><span class="turn-num">{index}</span>{esc(turn.get("question", ""))}</p>
+          <blockquote class="turn-a">{esc(turn.get("answer", ""))}</blockquote>
+          <div class="turn-notes">
+            <div class="note note-strength">
+              <span class="note-label">Strength</span>
+              <p class="note-text">{esc(turn.get("strength", ""))}</p>
+            </div>
+            <div class="note note-improve">
+              <span class="note-label">Improve</span>
+              <p class="note-text">{esc(turn.get("improvement", ""))}</p>
+            </div>
+          </div>
         </div>'''
         for index, turn in enumerate(report.get("turns", []), start=1)
     )
@@ -165,14 +177,26 @@ def render_html(report: dict) -> str:
 
     role = esc(report.get("role", "Interview"))
     session_id = esc(report.get("session_id", ""))
-    # Server-side fallback for browsers with JS disabled; the inline script
-    # below replaces it with the viewer's own local time and format once it
-    # runs, which is more meaningful than a timestamp in the server's zone.
-    _started_dt = datetime.fromtimestamp(report.get("started_at") or time.time())
-    started_label = esc(
-        f"{_started_dt.strftime('%b %d, %Y')} · "
-        f"{_started_dt.strftime('%I:%M %p').lstrip('0')}"
-    )
+
+    # started_at is ISO 8601 UTC (see build_report). The inline script below
+    # resolves it to the viewer's own locale and timezone with
+    # Intl.DateTimeFormat; what's rendered here is only what shows before
+    # that script runs (or if it can't). It must never guess or default to
+    # "now" — a report with no known start time shows no date at all rather
+    # than a fabricated one, and it's explicitly labelled UTC rather than
+    # presented as if it were already the viewer's local time.
+    started_at_iso = report.get("started_at") or ""
+    date_html = ""
+    if started_at_iso:
+        try:
+            _dt = datetime.fromisoformat(started_at_iso)
+            started_label = esc(f"{_dt.day} {_dt.strftime('%b %Y, %H:%M')} UTC")
+            date_html = (
+                f'<span id="metaDate" data-started-at="{esc(started_at_iso)}">'
+                f'{started_label}</span> · '
+            )
+        except ValueError:
+            pass
 
     return f"""<!doctype html>
 <html lang="en">
@@ -234,18 +258,52 @@ def render_html(report: dict) -> str:
   .score-max {{ font-family: var(--mono); font-size: 14px; color: var(--muted); }}
   .focus {{ font-family: var(--mono); font-size: 13px; color: var(--muted); margin: 10px 0 0; }}
   .focus b {{ color: var(--amber); }}
-  .body {{ padding: 24px 32px; }}
+  .body {{ padding: 8px 32px 24px; }}
   .dim {{ margin-bottom: 14px; }}
   .dim-row {{ display: flex; justify-content: space-between; font-family: var(--mono); font-size: 12px; margin-bottom: 6px; }}
   .dim-score {{ color: var(--muted); }}
   .track {{ height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }}
   .fill {{ height: 100%; background: var(--cyan); border-radius: 2px; }}
   .dim.weak .fill {{ background: var(--amber); }}
-  .turn {{ border-top: 1px solid var(--line); padding: 18px 0; }}
-  .turn-q {{ font-size: 15px; font-weight: 500; margin: 0 0 8px; }}
-  .turn-a {{ margin: 0 0 10px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); font-size: 14px; line-height: 1.6; }}
-  .turn-note {{ margin: 0 0 4px; font-size: 13px; }}
-  .turn-note b {{ font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }}
+
+  /* ── Question-by-question: three distinct voices ─────────────
+     1. the question itself (plain text, numbered)
+     2. the candidate's answer (a quote — visually set apart)
+     3. the evaluator's notes (labelled fields, not prose) */
+  .turn {{ border-top: 1px solid var(--line); padding: 30px 0; }}
+  .turn:first-of-type {{ padding-top: 8px; }}
+  .turn-q {{
+    display: flex; gap: 10px; align-items: baseline;
+    font-size: 16px; font-weight: 600; line-height: 1.5;
+    margin: 0 0 14px; max-width: 62ch;
+  }}
+  .turn-num {{
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    color: var(--amber); flex-shrink: 0;
+  }}
+  .turn-a {{
+    margin: 0 0 18px; padding: 12px 16px;
+    border-left: 2px solid var(--cyan); border-radius: 0 8px 8px 0;
+    background: rgba(77, 216, 230, 0.06);
+    color: var(--text); font-size: 14.5px; line-height: 1.7;
+    font-style: italic; max-width: 62ch;
+  }}
+  .turn-notes {{ display: grid; gap: 10px; grid-template-columns: 1fr; }}
+  @media (min-width: 560px) {{
+    .turn-notes {{ grid-template-columns: 1fr 1fr; }}
+  }}
+  .note {{
+    padding: 10px 14px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--line);
+  }}
+  .note-label {{
+    display: block; font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 5px;
+  }}
+  .note-strength .note-label {{ color: var(--cyan); }}
+  .note-improve .note-label {{ color: var(--amber); }}
+  .note-text {{ margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text); }}
+
   .actions {{ padding: 20px 32px 28px; border-top: 1px solid var(--line); display: flex; gap: 12px; flex-wrap: wrap; }}
   .actions a, .actions button {{
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
@@ -254,15 +312,20 @@ def render_html(report: dict) -> str:
   }}
   @media (max-width: 480px) {{
     .head, .body, .actions {{ padding-left: 18px; padding-right: 18px; }}
+    .turn {{ padding: 24px 0; }}
   }}
   @media print {{
     body {{ background: #fff; color: #111; padding: 0; }}
     main {{ width: 100%; border: none; border-radius: 0; }}
-    .actions {{ display: none; }}
-    .eyebrow, .score-value {{ color: #111; }}
+    .actions, .share-btn {{ display: none; }}
+    .eyebrow, .score-value, .turn-num {{ color: #111; }}
     .track {{ background: #ddd; }}
     .fill {{ background: #333; }}
-    .turn-a {{ border-left-color: #ccc; color: #333; }}
+    .turn {{ break-inside: avoid; }}
+    .turn-a {{ border-left-color: #999; color: #111; background: #f4f4f4; }}
+    .note {{ background: transparent; border-color: #ccc; }}
+    .note-strength .note-label, .note-improve .note-label {{ color: #111; }}
+    .note-text {{ color: #111; }}
   }}
 </style>
 </head>
@@ -278,7 +341,7 @@ def render_html(report: dict) -> str:
       </button>
     </div>
     <h1>{role}</h1>
-    <p class="meta"><span id="metaDate" data-ts="{report.get("started_at") or ""}">{started_label}</span> · {report.get("questions_answered", 0)} questions · {report.get("duration_seconds", 0)}s</p>
+    <p class="meta">{date_html}{report.get("questions_answered", 0)} questions · {report.get("duration_seconds", 0)}s</p>
     <div class="score">
       <span class="score-value">{report.get("overall_score", "—")}</span>
       <span class="score-max">/ 5</span>
@@ -297,15 +360,23 @@ def render_html(report: dict) -> str:
 <script>
 (function () {{
   var dateEl = document.getElementById('metaDate');
-  var ts = dateEl && parseFloat(dateEl.getAttribute('data-ts'));
-  if (dateEl && ts) {{
-    try {{
-      dateEl.textContent = new Date(ts * 1000).toLocaleString(undefined, {{
-        dateStyle: 'medium', timeStyle: 'short'
-      }});
-    }} catch (e) {{
-      // Intl.DateTimeFormat options unsupported in this browser — the
-      // server-rendered fallback text already in the DOM stays as-is.
+  var iso = dateEl && dateEl.getAttribute('data-started-at');
+  if (dateEl && iso) {{
+    var parsed = new Date(iso);
+    if (!isNaN(parsed.getTime())) {{
+      try {{
+        // undefined locale/timeZone = the viewer's own, resolved from the
+        // browser — the same link opened in different countries shows each
+        // viewer their own local time, not the server's and not each
+        // other's. The UTC string server-rendered above stays as a fallback
+        // if this throws (very old browsers without Intl).
+        dateEl.textContent = new Intl.DateTimeFormat(undefined, {{
+          day: "numeric", month: "short", year: "numeric",
+          hour: "numeric", minute: "2-digit", hour12: true
+        }}).format(parsed);
+      }} catch (e) {{
+        // Keep the server-rendered UTC fallback.
+      }}
     }}
   }}
 

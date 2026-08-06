@@ -169,6 +169,51 @@ Expected: `unknown: 404`, `scoring: 200` + has auto-refresh, `empty: 200`,
 grep -n "FAILURE_THRESHOLD = " scripts/check_agent_health.py
 ```
 
+## 9. Opening brief never becomes a question, never enters LLM memory
+
+**Depends on:** `bot.py` (`TranscriptTap`, `_on_connected`), `prompts.py`
+(`opening_brief`)
+
+Found live in report `1f3489af...`: the brief and question one were
+concatenated and duplicated, and the interview stopped after one question.
+Root cause was `TTSSpeakFrame.append_to_context` defaulting to `True`
+(pipecat, not this codebase) plus nothing clearing `TranscriptTap`'s
+question buffer between the brief and the real first question.
+
+- [ ] Start a real call. In the finished report, question one must be the
+      literal fundamentals question the interviewer asked — not prefixed
+      with "Before we begin..." and not repeated at the end of itself.
+- [ ] The interview must ask more than one question (it stalls if the LLM's
+      context is corrupted by this bug).
+
+```bash
+grep -n "append_to_context=False" bot.py   # must appear on the brief's TTSSpeakFrame
+grep -n "brief_done" bot.py                # Q1 must wait on it, not fire immediately
+```
+
+## 10. If the interview can't continue, it says so — never silence
+
+**Depends on:** `bot.py` (`run_session`'s `_on_service_error`),
+`prompts.py` (`cannot_continue_line`)
+
+Found live: a Groq daily-token-cap 429 mid-call left the bot silent for the
+rest of the session while the candidate tried three times to get a
+response, then gave up and left with no closing, no explanation.
+
+- [ ] Cannot be tested against a healthy Groq key (the failure needs a real
+      429/5xx to trigger). At minimum, after any change here, confirm by
+      reading the code that `_on_service_error` is registered on all three
+      of `stt`, `llm`, `tts`, and that it queues `TTSSpeakFrame` +
+      `EndFrame` rather than only logging.
+- [ ] If a real quota/outage happens again, confirm in the logs that the
+      candidate heard the fallback line and the report still finalised
+      (check `/report/{session_id}` shows a real, if partial, report — not
+      stuck on "scoring" forever).
+
+```bash
+grep -n "_on_service_error\|event_handler(\"on_error\")" bot.py
+```
+
 ## Before adding a new row
 
 If you build a new behavior, add its row here in the same sitting — not

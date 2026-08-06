@@ -80,3 +80,17 @@ def opening_instruction(s: Settings) -> str:
         "greet them again and do not repeat anything from it. Ask your first "
         "question now: a fundamentals-level question for this role."
     )
+
+
+def cannot_continue_line(s: Settings) -> str:
+    """Fixed script spoken when the interview has to stop early because a
+    backing service (LLM, STT, or TTS) is failing and retrying will not
+    help within the timeframe of a call — see run_session's on_error
+    handling. Same reasoning as opening_brief: this must reach the
+    candidate even when the LLM itself is what's broken, so it goes
+    straight to TTS rather than being generated.
+    """
+    return (
+        "I'm having trouble continuing this interview right now. Let's stop "
+        "here — your report will include everything we've covered so far."
+    )

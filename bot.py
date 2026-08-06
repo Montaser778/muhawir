@@ -38,7 +38,9 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: E402
 from pipecat.audio.vad.vad_analyzer import VADParams  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     EndFrame,
+    ErrorFrame,
     Frame,
     LLMRunFrame,
     TranscriptionFrame,
@@ -61,7 +63,12 @@ from pipecat.services.groq.stt import GroqSTTService  # noqa: E402
 from pipecat.transports.base_transport import BaseTransport, TransportParams  # noqa: E402
 
 from config import Settings, settings  # noqa: E402
-from prompts import interviewer_system_prompt, opening_brief, opening_instruction  # noqa: E402
+from prompts import (  # noqa: E402
+    cannot_continue_line,
+    interviewer_system_prompt,
+    opening_brief,
+    opening_instruction,
+)
 from report import Session, build_report, save  # noqa: E402
 from rubric import Evaluator, looks_like_clarification  # noqa: E402
 from store import store  # noqa: E402
@@ -145,6 +152,16 @@ class TranscriptTap(FrameProcessor):
     forwards it downstream, so this tap (which sits after the LLM and TTS)
     would never see it. AnswerProbe, planted upstream of that aggregator,
     hands the text over via note_transcription() before it gets swallowed.
+
+    The opening brief (spoken via a standalone TTSSpeakFrame before the
+    interview itself begins) produces TTSTextFrame chunks exactly like any
+    real question does, and nothing else in this class distinguishes "the
+    fixed brief" from "a real question" — both would silently concatenate
+    into the same _question_buffer since there is no user turn between them
+    to trigger a flush. brief_done is the fix: run_session waits on it
+    before ever asking a real question, and the first BotStoppedSpeakingFrame
+    (guaranteed by that ordering to be the brief's own, and only the
+    brief's) discards whatever accumulated during it.
     """
 
     def __init__(self, session: Session, evaluator: Evaluator):
@@ -154,6 +171,8 @@ class TranscriptTap(FrameProcessor):
         self._question_buffer: list[str] = []
         self._answer_buffer: list[str] = []
         self._user_stopped_at: float | None = None
+        self._interview_started = False
+        self.brief_done = asyncio.Event()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -173,6 +192,14 @@ class TranscriptTap(FrameProcessor):
                 self._session.record_latency(elapsed_ms)
                 log.info("Response latency: %.0f ms", elapsed_ms)
                 self._user_stopped_at = None
+
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            if not self._interview_started:
+                self._interview_started = True
+                # Discard whatever the brief's own TTSTextFrame chunks left
+                # in here — none of it is a real question.
+                self._question_buffer.clear()
+                self.brief_done.set()
 
         await self.push_frame(frame, direction)
 
@@ -264,23 +291,24 @@ def build_pipeline(transport: BaseTransport, tap: TranscriptTap, call_settings: 
         )
     )
 
-    return (
-        Pipeline(
-            [
-                transport.input(),
-                vad,
-                stt,
-                AnswerProbe(tap),
-                aggregators.user(),
-                llm,
-                tts,
-                tap,
-                transport.output(),
-                aggregators.assistant(),
-            ]
-        ),
-        context,
+    pipeline = Pipeline(
+        [
+            transport.input(),
+            vad,
+            stt,
+            AnswerProbe(tap),
+            aggregators.user(),
+            llm,
+            tts,
+            tap,
+            transport.output(),
+            aggregators.assistant(),
+        ]
     )
+    # Returned alongside the pipeline so run_session can attach on_error
+    # handlers directly to each backing service — see the "never silence"
+    # handling there.
+    return pipeline, context, (stt, llm, tts)
 
 
 async def run_session(
@@ -316,7 +344,7 @@ async def run_session(
     evaluator = Evaluator(s.groq_api_key, s.scorer_model)
     tap = TranscriptTap(session, evaluator)
 
-    pipeline, context = build_pipeline(transport, tap, s)
+    pipeline, context, (stt, llm, tts) = build_pipeline(transport, tap, s)
 
     task = PipelineTask(
         pipeline,
@@ -326,18 +354,66 @@ async def run_session(
         idle_timeout_secs=180,
     )
 
+    # "Can't continue" state, shared across whichever service errors first.
+    # Two strikes, not one: a single transient blip shouldn't end a call
+    # that could otherwise finish normally — the same reasoning already
+    # applied to the health-check's own FAILURE_THRESHOLD. A rate-limit or
+    # quota error (the one actually observed in production) won't clear
+    # inside a call's timeframe regardless, so two strikes costs nothing
+    # there either.
+    failure_count = 0
+    bailed_out = False
+
+    async def _on_service_error(processor, error_frame):
+        nonlocal failure_count, bailed_out
+        failure_count += 1
+        log.error(
+            "%s error (%d/2): %s", processor, failure_count, error_frame.error
+        )
+        if bailed_out or failure_count < 2:
+            return
+        bailed_out = True
+        log.error("Interview cannot continue — ending the call and finalising.")
+        # Straight to TTS, not the LLM: the LLM is exactly what's likely
+        # broken. EndFrame right behind it drives the same shutdown path
+        # _on_disconnected already uses, so tap.flush()/_finalise() below
+        # run exactly as they would for a normal end of call.
+        await task.queue_frames([
+            TTSSpeakFrame(cannot_continue_line(s), append_to_context=False),
+            EndFrame(),
+        ])
+
+    for service in (stt, llm, tts):
+        service.event_handler("on_error")(_on_service_error)
+
     @transport.event_handler("on_first_participant_joined")
     async def _on_connected(_transport, _participant):
         log.info("Candidate connected — session %s", session.session_id)
-        context.add_message({"role": "user", "content": opening_instruction(s)})
-        # The brief is a fixed string queued straight to TTS (TTSSpeakFrame
-        # skips the LLM entirely), so it costs zero extra model round trips.
-        # LLMRunFrame right behind it asks the real first question once the
-        # brief has been spoken.
+        # append_to_context=False: this is a fixed script, not something the
+        # LLM said, and must never enter its memory of the conversation —
+        # left at the (default) True, it silently becomes part of the
+        # "assistant" turn the LLM sees on every subsequent call, which is
+        # what previously corrupted the context enough to derail the rest
+        # of the interview.
         await task.queue_frames([
-            TTSSpeakFrame(opening_brief(s)),
-            LLMRunFrame(),
+            TTSSpeakFrame(opening_brief(s), append_to_context=False),
         ])
+        # Wait for the brief to actually finish before asking the real first
+        # question. Queuing both together used to let them run together as
+        # one continuous utterance with no turn boundary between them —
+        # which is how the brief's own text ended up folded into question
+        # one in the report. brief_done is set by TranscriptTap on the
+        # first BotStoppedSpeakingFrame it sees, which — because nothing
+        # else has been queued yet — can only be the brief's.
+        try:
+            await asyncio.wait_for(tap.brief_done.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            log.warning(
+                "Opening brief did not report completion within 60s; "
+                "asking the first question anyway rather than hanging."
+            )
+        context.add_message({"role": "user", "content": opening_instruction(s)})
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(_transport, _client):
