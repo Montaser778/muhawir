@@ -16,12 +16,44 @@ Two design decisions worth defending in an interview about this project:
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, asdict, field
 from typing import Any
 
 from openai import AsyncOpenAI
 
 log = logging.getLogger(__name__)
+
+# Real-time gate for task 4: catches the common, unambiguous phrasings of
+# "repeat/explain the question" before the text ever reaches TranscriptTap,
+# so it never gets paired and scored as if it were an answer. Deliberately
+# a plain regex, not a model call — this runs synchronously on every
+# transcription and must never cost the voice loop a millisecond.
+#
+# It will miss unusual phrasings; that gap is covered by the async
+# is_clarification flag below, which rides the scorer call this project
+# already makes off the critical path, so catching it there costs nothing
+# extra either.
+_CLARIFICATION_PATTERNS = re.compile(
+    r"\b("
+    r"repeat (that|it|the question)|"
+    r"say (that|it) again|"
+    r"come again|"
+    r"what('s| is| was) the question|"
+    r"(can|could) you (repeat|clarify|rephrase|explain)|"
+    r"what do you mean|"
+    r"i don'?t understand( the question)?|"
+    r"pardon( me)?|"
+    r"sorry,? (what|can you|could you)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_clarification(text: str) -> bool:
+    """True if this utterance is asking about the question, not answering it."""
+    return bool(_CLARIFICATION_PATTERNS.search(text))
+
 
 # The rubric is data, not prose baked into a prompt. Keeping it here means
 # you can version it, A/B it, and show it to a client as a deliverable.
@@ -36,9 +68,14 @@ DIMENSIONS: dict[str, str] = {
 _SCORER_PROMPT = """You are a strict interview evaluator. You will receive one
 question and the candidate's spoken answer, transcribed.
 
-Score each dimension from 1 to 5, where 3 is an acceptable hire-bar answer.
-For each dimension give one short sentence of justification quoting or
-referencing something concrete from the answer.
+First decide: is this actually an answer, or is the candidate asking you to
+repeat, rephrase, or explain the question instead of answering it? If it is
+a clarification request rather than an answer, set "is_clarification" to
+true and leave "scores" as an empty object — do not score it.
+
+Otherwise, score each dimension from 1 to 5, where 3 is an acceptable
+hire-bar answer. For each dimension give one short sentence of justification
+quoting or referencing something concrete from the answer.
 
 Dimensions:
 {dimensions}
@@ -49,7 +86,8 @@ speech transcript, so ignore punctuation and disfluencies when judging
 structure.
 
 Respond with ONLY a JSON object, no markdown fences, in this exact shape:
-{{"scores": {{"<dimension>": {{"score": <int>, "why": "<string>"}}}},
+{{"is_clarification": <bool>,
+  "scores": {{"<dimension>": {{"score": <int>, "why": "<string>"}}}},
   "strength": "<one sentence>",
   "improvement": "<one specific, actionable sentence>"}}"""
 
@@ -62,6 +100,12 @@ class TurnEvaluation:
     strength: str = ""
     improvement: str = ""
     error: str | None = None
+    # True when the scorer itself judged this turn to be a clarification
+    # request rather than a real answer — the safety net for phrasings the
+    # regex gate in TranscriptTap missed. bot._finalise filters these out
+    # before building the report, rather than dropping them here, so the
+    # raw evaluation history stays inspectable if this ever needs tuning.
+    is_clarification: bool = False
 
     @property
     def average(self) -> float:
@@ -110,6 +154,7 @@ class Evaluator:
                 ],
             )
             payload = json.loads(response.choices[0].message.content)
+            evaluation.is_clarification = bool(payload.get("is_clarification", False))
             evaluation.scores = payload.get("scores", {})
             evaluation.strength = payload.get("strength", "")
             evaluation.improvement = payload.get("improvement", "")

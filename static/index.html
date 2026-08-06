@@ -174,6 +174,28 @@
   .legend .you::before { background: var(--cyan); }
   .legend .them::before { background: var(--amber); }
 
+  /* ── Pre-call setup: topic + level ─────────────────────── */
+  .setup { padding: 0 32px 20px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .setup input,
+  .setup select {
+    flex: 1 1 180px;
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .setup input::placeholder { color: var(--muted); }
+  .setup input:focus,
+  .setup select:focus {
+    outline: none;
+    border-color: var(--amber);
+  }
+  .setup input:disabled,
+  .setup select:disabled { opacity: 0.5; cursor: not-allowed; }
+
   /* ── Controls ───────────────────────────────────────────── */
   .controls { padding: 20px 32px 32px; display: flex; align-items: center; gap: 16px; }
 
@@ -296,6 +318,7 @@
   @media (max-width: 480px) {
     body { padding: 12px; }
     .head { padding: 28px 18px 20px; }
+    .setup { padding: 0 18px 16px; }
     .stage { padding: 8px 18px 4px; }
     .legend { padding: 0 18px 4px; gap: 16px; }
     .controls { padding: 16px 18px 24px; flex-wrap: wrap; }
@@ -326,6 +349,15 @@
       <span id="noteReport">Scored report when the call ends</span>
     </p>
   </header>
+
+  <div class="setup" id="setup">
+    <input type="text" id="topicInput" placeholder="Interview topic" maxlength="120" />
+    <select id="levelSelect">
+      <option value="junior">Junior</option>
+      <option value="mid" selected>Mid</option>
+      <option value="senior">Senior</option>
+    </select>
+  </div>
 
   <div class="stage">
     <canvas id="wave" aria-hidden="true"></canvas>
@@ -411,6 +443,8 @@ const els = {
   status: document.getElementById("status"),
   rtt: document.getElementById("rtt"),
   role: document.getElementById("role"),
+  topicInput: document.getElementById("topicInput"),
+  levelSelect: document.getElementById("levelSelect"),
   start: document.getElementById("start"),
   stop: document.getElementById("stop"),
   hint: document.getElementById("hint"),
@@ -587,13 +621,22 @@ async function start() {
   els.report.hidden = true;
   clearInterval(pollTimer);
   els.start.disabled = true;
+  els.topicInput.disabled = true;
+  els.levelSelect.disabled = true;
   setStatus(t("waking"), "wait");
+
+  const topic = els.topicInput.value.trim();
+  const level = els.levelSelect.value;
 
   // The agent scales from zero, so the first request of the day pays a cold
   // start. This can take ten seconds or so; the status dot covers the wait.
   let room, token;
   try {
-    const response = await fetch("/api/connect", { method: "POST" });
+    const response = await fetch("/api/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: topic, seniority: level }),
+    });
     if (!response.ok) throw new Error("Server returned " + response.status);
     const data = await response.json();
     room = data.room_url;
@@ -604,8 +647,15 @@ async function start() {
     showError(t("errServer"));
     setStatus(t("idle"));
     els.start.disabled = false;
+    els.topicInput.disabled = false;
+    els.levelSelect.disabled = false;
     return;
   }
+
+  // Optimistic: reflect what was actually submitted rather than waiting on
+  // a round trip, and only if the candidate typed something — an empty
+  // topic field means "use the bot's own default," so leave the heading as-is.
+  if (topic) els.role.textContent = topic;
 
   setStatus(t("connecting"), "wait");
 
@@ -685,6 +735,8 @@ async function stop() {
   setStatus(t("ended"));
   els.rtt.textContent = "—";
   els.start.disabled = false;
+  els.topicInput.disabled = false;
+  els.levelSelect.disabled = false;
   els.start.textContent = t("again");
   els.stop.hidden = true;
   els.hint.textContent = t("hintDone");
@@ -790,7 +842,15 @@ applyStrings();
 
 fetch("/api/health")
   .then((r) => r.json())
-  .then((d) => { if (d.role) els.role.textContent = d.role; })
+  .then((d) => {
+    if (d.role) {
+      els.role.textContent = d.role;
+      els.topicInput.value = d.role;
+    }
+    if (d.seniority && ["junior", "mid", "senior"].includes(d.seniority)) {
+      els.levelSelect.value = d.seniority;
+    }
+  })
   .catch(() => {});
 </script>
 </body>

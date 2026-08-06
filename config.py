@@ -1,7 +1,7 @@
 """Runtime configuration, driven entirely by environment variables."""
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pipecat.transcriptions.language import Language
 
@@ -65,6 +65,21 @@ class Settings:
     def tts_language(self) -> Language:
         """Cartesia needs the language explicitly; it will not infer it."""
         return Language.EN
+
+    def for_session(self, *, role: str | None = None, seniority: str | None = None) -> "Settings":
+        """A per-call copy with topic/level overrides.
+
+        `settings` is a module-level singleton read by every session. On
+        Pipecat Cloud that is safe (one container per call), but mutating
+        it in place would race across concurrent calls on any process that
+        ever handles more than one session at once. Returning a copy via
+        `dataclasses.replace` costs nothing and closes that door for good.
+        """
+        return replace(
+            self,
+            role=(role or "").strip() or self.role,
+            seniority=(seniority or "").strip() or self.seniority,
+        )
 
     def validate(self) -> None:
         missing = [

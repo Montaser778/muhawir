@@ -74,7 +74,11 @@ def build_report(session: Session, evaluations: list[TurnEvaluation]) -> dict:
         "role": session.role,
         "language": session.language,
         "duration_seconds": round(time.time() - session.started_at, 1),
-        "questions_answered": len(session.turns),
+        # Derived from evaluations, not len(session.turns): the caller
+        # (bot._finalise) filters out clarification-flagged turns and any
+        # that never finished scoring before evaluations reaches here, so
+        # this is the count of turns actually reflected in the scores below.
+        "questions_answered": len(evaluations),
         "overall_score": overall,
         "dimension_averages": averages,
         "weakest_dimension": min(averages, key=averages.get) if averages else None,

@@ -42,6 +42,7 @@ from pipecat.frames.frames import (  # noqa: E402
     Frame,
     LLMRunFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
     TTSTextFrame,
     UserStoppedSpeakingFrame,
 )
@@ -59,10 +60,10 @@ from pipecat.services.groq.llm import GroqLLMService  # noqa: E402
 from pipecat.services.groq.stt import GroqSTTService  # noqa: E402
 from pipecat.transports.base_transport import BaseTransport, TransportParams  # noqa: E402
 
-from config import settings  # noqa: E402
-from prompts import interviewer_system_prompt, opening_instruction  # noqa: E402
+from config import Settings, settings  # noqa: E402
+from prompts import interviewer_system_prompt, opening_brief, opening_instruction  # noqa: E402
 from report import Session, build_report, save  # noqa: E402
-from rubric import Evaluator  # noqa: E402
+from rubric import Evaluator, looks_like_clarification  # noqa: E402
 from store import store  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -174,6 +175,14 @@ class TranscriptTap(FrameProcessor):
         if self._question_buffer:
             self._session.record_question(" ".join(self._question_buffer))
             self._question_buffer.clear()
+        if looks_like_clarification(text):
+            # "Can you repeat that?" is not an answer. Leave it out of the
+            # answer buffer entirely: _last_question stays set on the
+            # Session, so whatever the candidate says once the bot has
+            # repeated/explained still pairs with the original question.
+            # The scorer's own is_clarification flag (rubric.py) is the
+            # safety net for phrasings this regex misses.
+            return
         self._answer_buffer.append(text)
 
     def flush(self) -> None:
@@ -206,40 +215,40 @@ class AnswerProbe(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def build_pipeline(transport: BaseTransport, tap: TranscriptTap):
+def build_pipeline(transport: BaseTransport, tap: TranscriptTap, call_settings: Settings):
     stt = GroqSTTService(
-        api_key=settings.groq_api_key,
-        model=settings.stt_model,
-        language=settings.stt_language(),
+        api_key=call_settings.groq_api_key,
+        model=call_settings.stt_model,
+        language=call_settings.stt_language(),
     )
 
     llm = GroqLLMService(
-        api_key=settings.groq_api_key,
-        model=settings.llm_model,
+        api_key=call_settings.groq_api_key,
+        model=call_settings.llm_model,
     )
 
     tts_kwargs = {}
-    if settings.tts_model:
-        tts_kwargs["model"] = settings.tts_model
+    if call_settings.tts_model:
+        tts_kwargs["model"] = call_settings.tts_model
 
     tts = CartesiaTTSService(
-        api_key=settings.cartesia_api_key,
-        voice_id=settings.tts_voice_id,
-        params=CartesiaTTSService.InputParams(language=settings.tts_language()),
+        api_key=call_settings.cartesia_api_key,
+        voice_id=call_settings.tts_voice_id,
+        params=CartesiaTTSService.InputParams(language=call_settings.tts_language()),
         **tts_kwargs,
     )
 
     context = LLMContext(
-        messages=[{"role": "system", "content": interviewer_system_prompt(settings)}]
+        messages=[{"role": "system", "content": interviewer_system_prompt(call_settings)}]
     )
     aggregators = LLMContextAggregatorPair(context)
 
     vad = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
-                confidence=settings.vad_confidence,
-                start_secs=settings.vad_start_secs,
-                stop_secs=settings.vad_stop_secs,
+                confidence=call_settings.vad_confidence,
+                start_secs=call_settings.vad_start_secs,
+                stop_secs=call_settings.vad_stop_secs,
             )
         )
     )
@@ -263,13 +272,22 @@ def build_pipeline(transport: BaseTransport, tap: TranscriptTap):
     )
 
 
-async def run_session(transport: BaseTransport, session_id: str) -> None:
+async def run_session(
+    transport: BaseTransport, session_id: str, call_settings: Settings | None = None
+) -> None:
     """One interview call, transport-agnostic.
 
     Takes a ready-made transport so the same body serves both SmallWebRTC
     locally and Daily on Pipecat Cloud.
+
+    call_settings, when given, is a per-call copy (see Settings.for_session)
+    carrying the topic/level chosen for this candidate. Falls back to the
+    module-level settings singleton — today only bot()'s Pipecat Cloud path
+    builds a per-call copy; run_bot's local path still uses the shared
+    defaults, unchanged from before this existed.
     """
-    settings.validate()
+    s = call_settings or settings
+    s.validate()
 
     problem = _sink_config_problem()
     if problem:
@@ -280,14 +298,14 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
 
     session = Session(
         session_id=session_id,
-        role=settings.role,
-        language=settings.language,
+        role=s.role,
+        language=s.language,
     )
-    store.create(session_id, settings.role, settings.language)
-    evaluator = Evaluator(settings.groq_api_key, settings.scorer_model)
+    store.create(session_id, s.role, s.language)
+    evaluator = Evaluator(s.groq_api_key, s.scorer_model)
     tap = TranscriptTap(session, evaluator)
 
-    pipeline, context = build_pipeline(transport, tap)
+    pipeline, context = build_pipeline(transport, tap, s)
 
     task = PipelineTask(
         pipeline,
@@ -300,8 +318,15 @@ async def run_session(transport: BaseTransport, session_id: str) -> None:
     @transport.event_handler("on_first_participant_joined")
     async def _on_connected(_transport, _participant):
         log.info("Candidate connected — session %s", session.session_id)
-        context.add_message({"role": "user", "content": opening_instruction(settings)})
-        await task.queue_frames([LLMRunFrame()])
+        context.add_message({"role": "user", "content": opening_instruction(s)})
+        # The brief is a fixed string queued straight to TTS (TTSSpeakFrame
+        # skips the LLM entirely), so it costs zero extra model round trips.
+        # LLMRunFrame right behind it asks the real first question once the
+        # brief has been spoken.
+        await task.queue_frames([
+            TTSSpeakFrame(opening_brief(s)),
+            LLMRunFrame(),
+        ])
 
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(_transport, _client):
@@ -403,6 +428,18 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
         log.warning("Scoring did not finish in time; writing partial report.")
         evaluations = evaluator.results
 
+    # Clarification requests the regex gate in TranscriptTap.note_transcription
+    # missed still got scored above (no extra round trip — same call), but
+    # they were never real answers. Drop them before they touch the report,
+    # so a "can you repeat that" never costs the candidate points.
+    clarifications = sum(1 for e in evaluations if e.is_clarification)
+    if clarifications:
+        log.info(
+            "Excluding %d clarification exchange(s) from session %s's report.",
+            clarifications, session.session_id,
+        )
+        evaluations = [e for e in evaluations if not e.is_clarification]
+
     if not evaluations:
         log.info("No scored turns for session %s; skipping report.", session.session_id)
         store.set_status(session.session_id, "empty")
@@ -452,4 +489,15 @@ async def bot(runner_args) -> None:
         or uuid.uuid4().hex[:12]
     )
 
-    await run_session(transport, session_id)
+    # Topic + level chosen client-side before the call starts, carried here
+    # via runner_args.body — server.py's /api/connect forwards whatever the
+    # candidate submitted as the Pipecat /start payload's "body". Falls back
+    # to the env-var defaults in Settings when the client sent nothing.
+    body = getattr(runner_args, "body", None)
+    body = body if isinstance(body, dict) else {}
+    call_settings = settings.for_session(
+        role=body.get("role"),
+        seniority=body.get("seniority"),
+    )
+
+    await run_session(transport, session_id, call_settings)

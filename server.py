@@ -52,7 +52,7 @@ app = FastAPI(title="Muhawir")
 
 
 @app.post("/api/connect")
-async def connect():
+async def connect(request: Request):
     """Start an agent session and hand the browser a room to join.
 
     Cold starts are real: with min_agents at 0 the first request waits for a
@@ -62,11 +62,21 @@ async def connect():
     if not PIPECAT_API_KEY:
         return JSONResponse({"error": "Server missing PIPECAT_API_KEY"}, status_code=500)
 
+    try:
+        client_body = await request.json()
+    except Exception:
+        client_body = {}
+
+    # Candidate-chosen topic/level. Capped so a pasted essay doesn't end up
+    # bloating the system prompt it flows into (see Settings.for_session,
+    # prompts.py). Missing/blank values fall back to the bot's env defaults.
+    role = str(client_body.get("role") or "").strip()[:120]
+    seniority = str(client_body.get("seniority") or "").strip()[:40]
+
     payload = {
         "createDailyRoom": True,
-        # Anything in "body" arrives at the bot as runner_args.body — the hook
-        # for per-call config (candidate name, role) once the client sends it.
-        "body": {},
+        # Arrives at the bot as runner_args.body — read in bot.py's bot().
+        "body": {"role": role, "seniority": seniority},
     }
 
     try:
@@ -157,6 +167,10 @@ async def health():
         "status": "ok",
         "agent": AGENT_NAME,
         "key_configured": bool(PIPECAT_API_KEY),
+        # Defaults for the pre-call topic/level form (static/index.html).
+        # Mirrors config.py's own env-var defaults on the bot side.
+        "role": os.getenv("INTERVIEW_ROLE", "Machine Learning Engineer"),
+        "seniority": os.getenv("INTERVIEW_LEVEL", "mid"),
     }
 
 
