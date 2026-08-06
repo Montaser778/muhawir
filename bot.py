@@ -370,8 +370,18 @@ async def run_session(
         log.error(
             "%s error (%d/2): %s", processor, failure_count, error_frame.error
         )
-        if bailed_out or failure_count < 2:
-            return
+        if bailed_out:
+    return
+
+if failure_count == 1:
+    # 429 means "wait", not "broken". Say something, pause, retry —
+    # returning silently here is what left the candidate in dead air.
+    await task.queue_frames([
+        TTSSpeakFrame("One moment.", append_to_context=False),
+    ])
+    await asyncio.sleep(3)
+    await task.queue_frames([LLMRunFrame()])
+    return
         bailed_out = True
         log.error("Interview cannot continue — ending the call and finalising.")
         # Straight to TTS, not the LLM: the LLM is exactly what's likely
