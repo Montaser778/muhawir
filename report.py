@@ -97,10 +97,10 @@ def build_report(session: Session, evaluations: list[TurnEvaluation]) -> dict:
 
 def render_markdown(report: dict) -> str:
     lines = [
-        f"# Interview report â€” {report['role']}",
+        f"# Interview report — {report['role']}",
         "",
-        f"Session `{report['session_id']}` آ· {report['questions_answered']} questions "
-        f"آ· {report['duration_seconds']}s آ· median response latency "
+        f"Session `{report['session_id']}` · {report['questions_answered']} questions "
+        f"· {report['duration_seconds']}s · median response latency "
         f"{report['p50_response_latency_ms']} ms",
         "",
         f"**Overall: {report['overall_score']} / 5**",

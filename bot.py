@@ -559,6 +559,21 @@ async def _finalise(session: Session, evaluator: Evaluator) -> None:
         )
         evaluations = [e for e in evaluations if not e.is_clarification]
 
+    # A turn whose scoring call itself failed (e.g. the same Groq 429 that
+    # can hit the interview LLM) carries no real judgement — TurnEvaluation
+    # .average defaults to 0.0 when scores is empty, which without this
+    # filter becomes a literal 0/5 baked into the candidate's overall score
+    # for a question that was never actually graded. Drop it, same as a
+    # clarification: "never scored" must never render as "scored zero".
+    errored = sum(1 for e in evaluations if e.error)
+    if errored:
+        log.info(
+            "Excluding %d turn(s) that failed to score (system error, not "
+            "a judged answer) from session %s's report.",
+            errored, session.session_id,
+        )
+        evaluations = [e for e in evaluations if not e.error]
+
     if not evaluations:
         log.info("No scored turns for session %s; skipping report.", session.session_id)
         store.set_status(session.session_id, "empty")
